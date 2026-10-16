@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var showPairOnDevice = false
     @State private var showNameEasterEgg = false
     @State private var tunnelIP = TunnelConfig.targetIP
+    @State private var localTunnelIP = TunnelConfig.localIP
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @Environment(\.scenePhase) private var scenePhase
 
@@ -29,7 +30,7 @@ struct SettingsView: View {
             List {
                 Section {
                     Label {
-                        Text(pairing.hasPairingFile ? "RPPairing file installed" : "No pairing file")
+                        Text(pairing.hasPairingFile ? "已安裝 RPPairing 檔案" : "尚未有配對檔案")
                     } icon: {
                         Image(systemName: pairing.hasPairingFile ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(pairing.hasPairingFile ? LocusTheme.statusGood : LocusTheme.statusWarn)
@@ -39,12 +40,12 @@ struct SettingsView: View {
                         Button {
                             showPairOnDevice = true
                         } label: {
-                            Label("Pair on this iPhone", systemImage: "iphone.gen3.radiowaves.left.and.right")
+                            Label("在這支 iPhone 上配對", systemImage: "iphone.gen3.radiowaves.left.and.right")
                         }
                     }
 
-                    Button("Import RPPairing file…") { showImporter = true }
-                    Button("Paste RPPairing from clipboard") {
+                    Button("匯入 RPPairing 檔案…") { showImporter = true }
+                    Button("從剪貼簿貼上 RPPairing") {
                         do {
                             try pairing.importPairingFromClipboard()
                         } catch {
@@ -52,31 +53,38 @@ struct SettingsView: View {
                         }
                     }
                     if pairing.hasPairingFile {
-                        Button("Remove pairing file", role: .destructive) {
+                        Button("移除配對檔案", role: .destructive) {
                             try? pairing.removePairing()
                         }
                     }
                 } header: {
-                    Text("Developer pairing")
+                    Text("開發者配對")
                 } footer: {
                     Text(supportsOnDevicePairing
-                         ? "On iOS 27, use Pair on this iPhone — no computer. Locus advertises a pairable host; confirm the 6-digit code under Settings › Privacy & Security › Developer Mode › Pair with Host. On older iOS, import an RPPairing file from idevice_pair (not a SideStore lockdown .mobiledevicepairing). LiveContainer: enable Fix File Picker on Locus, or use Paste / Share → LiveContainer → Locus."
-                         : "Import an RPPairing file from idevice_pair (not a SideStore lockdown .mobiledevicepairing). If the file picker fails (common in LiveContainer), enable Fix File Picker on the app, share the file into LiveContainer → Locus, or copy the plist and use Paste.")
+                         ? "iOS 27 上可以用「在這支 iPhone 上配對」——不需要電腦。Locus 會廣播一個可配對的主機，請到「設定」›「隱私權與安全性」›「開發者模式」›「與主機配對」確認那組 6 位數代碼。舊版 iOS 則請匯入 idevice_pair 產生的 RPPairing 檔案（不是 SideStore 的 .mobiledevicepairing）。LiveContainer 使用者：在 Locus 開啟「修正檔案選擇器」，或改用貼上／分享到 LiveContainer → Locus。"
+                         : "請匯入 idevice_pair 產生的 RPPairing 檔案（不是 SideStore 的 .mobiledevicepairing）。如果檔案選擇器打不開（LiveContainer 常見問題），可以在該 App 開啟「修正檔案選擇器」、把檔案分享到 LiveContainer → Locus，或直接複製 plist 內容後用貼上。")
                 }
 
                 Section {
-                    TextField("Device tunnel IP", text: $tunnelIP)
+                    TextField("Device IP（撥號目標）", text: $tunnelIP)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .onSubmit {
                             TunnelConfig.setTargetIP(tunnelIP)
                         }
-                    LabeledContent("Status") {
-                        Text(LocalDevVPN.isConnected ? "Connected" : "Not connected")
+                    TextField("Tunnel IP（這支 iPhone 自己）", text: $localTunnelIP)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit {
+                            TunnelConfig.setLocalIP(localTunnelIP)
+                        }
+                    LabeledContent("狀態") {
+                        Text(LocalDevVPN.isConnected ? "VPN 已連線" : "VPN 未連線")
                             .foregroundStyle(LocalDevVPN.isConnected ? LocusTheme.statusGood : LocusTheme.statusWarn)
                     }
-                    Button("Save tunnel IP") {
+                    Button("儲存穿隧設定") {
                         TunnelConfig.setTargetIP(tunnelIP)
+                        TunnelConfig.setLocalIP(localTunnelIP)
                     }
                     Button {
                         if localDevVPNInstalled {
@@ -86,26 +94,26 @@ struct SettingsView: View {
                         }
                     } label: {
                         Label(
-                            localDevVPNInstalled ? "Open LocalDevVPN" : "Get LocalDevVPN (App Store)",
+                            localDevVPNInstalled ? "開啟 LocalDevVPN" : "取得 LocalDevVPN（App Store）",
                             systemImage: localDevVPNInstalled ? "lock.shield.fill" : "arrow.down.app.fill"
                         )
                     }
                 } header: {
-                    Text("Tunnel")
+                    Text("穿隧通道")
                 } footer: {
-                    Text("Connect LocalDevVPN before teleporting. Default tunnel IP is 10.7.0.1. Start a spoof on Wi‑Fi first; it can keep working on cellular afterward.")
+                    Text("LocalDevVPN 畫面上會顯示兩個不同的號碼，請照上面標示的名稱原樣填入：「Device IP」（預設 10.7.0.1）是 Locus 要撥號連去你手機開發者服務的位址；「Tunnel IP」（預設 10.7.1.1）是 LocalDevVPN 指派給這支 iPhone 自己的位址，只用來確認穿隧通道是否建立。這裡的「狀態」只代表 VPN 網路層是否連通，不代表定位注入本身是否成功——要確認的話請看地圖上方的狀態列，或是 Xcode 主控台的紀錄。第一次瞬移建議先在 Wi‑Fi 下進行，之後可以在行動網路下繼續運作。")
                 }
 
-                Section("Privacy") {
-                    Text("Fully on-device. Favorites and recents stay in UserDefaults. No analytics, no accounts, nothing uploaded.")
+                Section("隱私權") {
+                    Text("完全在裝置端處理。收藏與最近紀錄只存在 UserDefaults 裡，沒有任何分析、帳號或上傳行為。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("About") {
-                    LabeledContent("Version", value: appVersion)
-                    LabeledContent("Engine", value: "idevice DVT location simulation")
-                    Text("Locus is free and open source (MIT). Location injection uses the MIT-licensed idevice FFI.")
+                Section("關於") {
+                    LabeledContent("版本", value: appVersion)
+                    LabeledContent("引擎", value: "idevice DVT 定位模擬")
+                    Text("Locus 是免費且開源的（MIT 授權）。定位注入使用同樣採 MIT 授權的 idevice FFI。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -114,7 +122,7 @@ struct SettingsView: View {
                     Button {
                         showNameEasterEgg = true
                     } label: {
-                        Text("locus, n. — a place. From the Latin for where you are.")
+                        Text("locus，n. ——「所在之處」。源自拉丁文，意指你所在的位置。")
                             .font(.footnote.italic())
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -126,11 +134,12 @@ struct SettingsView: View {
                     .listRowSeparator(.hidden)
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("設定")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
+                    Button("完成") {
                         TunnelConfig.setTargetIP(tunnelIP)
+                        TunnelConfig.setLocalIP(localTunnelIP)
                         dismiss()
                     }
                 }
@@ -179,9 +188,9 @@ struct PlacesView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Favorites") {
+                Section("收藏") {
                     if session.favorites.isEmpty {
-                        Text("Star a pin from the map to save it.")
+                        Text("在地圖上幫圖釘按星號就能收藏。")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(session.favorites) { place in
@@ -190,22 +199,22 @@ struct PlacesView: View {
                                 Button(role: .destructive) {
                                     session.removeFavorite(place)
                                 } label: {
-                                    Label("Delete", systemImage: "trash.fill")
+                                    Label("刪除", systemImage: "trash.fill")
                                 }
                                 Button {
                                     placeToRename = place
                                     renameText = place.name
                                 } label: {
-                                    Label("Rename", systemImage: "pencil")
+                                    Label("重新命名", systemImage: "pencil")
                                 }
                                 .tint(.gray)
                             }
                     }
                 }
 
-                Section("Recents") {
+                Section("最近紀錄") {
                     if session.recents.isEmpty {
-                        Text("Teleports show up here.")
+                        Text("瞬移過的地點會顯示在這裡。")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(session.recents) { place in
@@ -214,34 +223,34 @@ struct PlacesView: View {
                                 Button(role: .destructive) {
                                     session.removeRecent(place)
                                 } label: {
-                                    Label("Delete", systemImage: "trash.fill")
+                                    Label("刪除", systemImage: "trash.fill")
                                 }
                             }
                     }
                 }
             }
-            .navigationTitle("Places")
+            .navigationTitle("地點")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("完成") { dismiss() }
                 }
             }
-            .alert("Rename Favorite", isPresented: Binding(
+            .alert("重新命名收藏", isPresented: Binding(
                 get: { placeToRename != nil },
                 set: { if !$0 { placeToRename = nil } }
             )) {
-                TextField("Name", text: $renameText)
-                Button("Cancel", role: .cancel) {
+                TextField("名稱", text: $renameText)
+                Button("取消", role: .cancel) {
                     placeToRename = nil
                 }
-                Button("Save") {
+                Button("儲存") {
                     if let place = placeToRename {
                         session.renameFavorite(place, to: renameText)
                     }
                     placeToRename = nil
                 }
             } message: {
-                Text("Choose a name you’ll recognize later.")
+                Text("取一個之後看得懂的名稱。")
             }
         }
     }

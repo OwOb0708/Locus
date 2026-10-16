@@ -108,8 +108,8 @@ final class PairOnDeviceService: ObservableObject {
     fileprivate func handleConnected() {
         phase = .deviceConnected
         Self.postPlainNotification(
-            title: "Locus connected",
-            body: "Generating pairing code…"
+            title: "Locus 已連線",
+            body: "正在產生配對代碼…"
         )
     }
 
@@ -125,8 +125,8 @@ final class PairOnDeviceService: ObservableObject {
         phase = .succeeded
         teardown()
         Self.postPlainNotification(
-            title: "Locus paired",
-            body: "RPPairing is ready. Connect LocalDevVPN, then teleport."
+            title: "Locus 配對完成",
+            body: "RPPairing 已就緒。請連接 LocalDevVPN，再執行瞬移。"
         )
     }
 
@@ -166,7 +166,7 @@ final class PairOnDeviceService: ObservableObject {
 
     private static func postPINNotification(_ pin: String) {
         let content = UNMutableNotificationContent()
-        content.title = "Locus pairing code"
+        content.title = "Locus 配對代碼"
         content.body = pin
         content.sound = .default
         if #available(iOS 15.0, *) {
@@ -185,7 +185,12 @@ final class PairOnDeviceService: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
 
-    private static func runBlockingAccept(outputPath: String, box: PairCallbackBox) {
+    // Deliberately runs on a raw background Thread (see `start()`), never on
+    // the main actor — `pairable_host_accept` blocks synchronously waiting
+    // for a device to connect. `nonisolated` matches that and silences the
+    // false-positive "main actor-isolated" warning; every callback still
+    // hops back to MainActor explicitly via DispatchQueue.main.async below.
+    private nonisolated static func runBlockingAccept(outputPath: String, box: PairCallbackBox) {
         let name = "Locus"
         let model = "Mac17,7"
 
@@ -215,7 +220,7 @@ final class PairOnDeviceService: ObservableObject {
             if let cMessage = err.pointee.message {
                 message = String(cString: cMessage)
             } else {
-                message = "Unknown pairing error (\(err.pointee.code))"
+                message = "未知的配對錯誤（\(err.pointee.code)）"
             }
             idevice_error_free(err)
             DispatchQueue.main.async { box.owner?.handleFailure(message) }
@@ -224,7 +229,7 @@ final class PairOnDeviceService: ObservableObject {
 
         guard let outFile else {
             DispatchQueue.main.async {
-                box.owner?.handleFailure("Pairing finished but no pairing file was returned.")
+                box.owner?.handleFailure("配對流程已結束，但沒有取得配對檔案。")
             }
             return
         }
@@ -242,11 +247,11 @@ final class PairOnDeviceService: ObservableObject {
             if let cMessage = writeError.pointee.message {
                 message = String(cString: cMessage)
             } else {
-                message = "Failed to write pairing file"
+                message = "寫入配對檔案失敗"
             }
             idevice_error_free(writeError)
             DispatchQueue.main.async {
-                box.owner?.handleFailure("Paired, but failed to save file: \(message)")
+                box.owner?.handleFailure("已完成配對，但儲存檔案失敗：\(message)")
             }
             return
         }

@@ -1,6 +1,36 @@
 import MapKit
 import SwiftUI
 
+/// What to do once a speed has been picked — carries whatever coordinates
+/// that action needs so the confirm step doesn't have to re-derive state.
+private enum SpeedPickerContext: Identifiable {
+    case navigate(CLLocationCoordinate2D)
+    case multiStop([CLLocationCoordinate2D])
+    case importedGPX([CLLocationCoordinate2D])
+
+    var id: String {
+        switch self {
+        case .navigate(let c): return "navigate-\(c.latitude)-\(c.longitude)"
+        case .multiStop(let pts): return "multiStop-\(pts.count)-\(pts.last?.latitude ?? 0)-\(pts.last?.longitude ?? 0)"
+        case .importedGPX(let pts): return "gpx-\(pts.count)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .navigate: return "導航到這個地點"
+        case .multiStop: return "依序走訪多個地點"
+        case .importedGPX: return "播放匯入的 GPX 路線"
+        }
+    }
+}
+
+/// Identifiable wrapper so a plain coordinate can drive `.sheet(item:)`.
+private struct PendingPin: Identifiable {
+    let coordinate: CLLocationCoordinate2D
+    var id: String { "\(coordinate.latitude)-\(coordinate.longitude)" }
+}
+
 struct MapHomeView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
@@ -9,27 +39,29 @@ struct MapHomeView: View {
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
-    @State private var routeStart: CLLocationCoordinate2D?
-    @State private var routeEnd: CLLocationCoordinate2D?
     @State private var routeCoords: [CLLocationCoordinate2D] = []
     @State private var isRouting = false
-    @State private var showRouteSheet = false
     @State private var showGPXImporter = false
-    @State private var drawnPath: [CLLocationCoordinate2D] = []
-    @State private var drawMode = false
     @State private var pinSelected = false
     @State private var isDraggingPin = false
     @State private var suppressNextMapTap = false
     /// Set when the pin comes from search / a named place so starring keeps the title.
     @State private var pinPlaceName: String?
 
-    private var mapStyle: MapStyle {
-        switch session.mapStyleIndex {
-        case 1: return .hybrid(elevation: .realistic)
-        case 2: return .imagery(elevation: .realistic)
-        default: return .standard(elevation: .realistic)
-        }
-    }
+    /// Drives the "傳送／導航／多點模式／遙控" bottom sheet after a plain map tap.
+    @State private var pendingPin: PendingPin?
+    @State private var multiStopActive = false
+    @State private var multiStopWaypoints: [CLLocationCoordinate2D] = []
+    @State private var speedPickerPayload: SpeedPickerContextWrapper?
+    @State private var pickedMode: TravelMode = .walk
+    @State private var pickedSpeed: CLLocationSpeed = TravelMode.walk.baseSpeed
+    @State private var pickedIsCustom = false
+    @State private var showSettings = false
+    @State private var showPlaces = false
+
+    /// Plain standard map, no satellite/hybrid imagery and no 3D elevation —
+    /// keeps rendering cheap and avoids MapKit's realistic-elevation glitches.
+    private let mapStyle: MapStyle = .standard(elevation: .flat)
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -86,7 +118,7 @@ struct MapHomeView: View {
                         }
                     }
                     if let sim = session.simulated {
-                        Annotation("Spoof", coordinate: sim) {
+                        Annotation("模擬位置", coordinate: sim) {
                             ZStack {
                                 Circle().fill(LocusTheme.accent.opacity(0.25)).frame(width: 44, height: 44)
                                 Circle().fill(LocusTheme.accent).frame(width: 14, height: 14)
@@ -94,13 +126,18 @@ struct MapHomeView: View {
                             }
                         }
                     }
+                    ForEach(Array(multiStopWaypoints.enumerated()), id: \.offset) { index, coord in
+                        Annotation("", coordinate: coord) {
+                            WaypointMarker(number: index + 1)
+                        }
+                    }
                     if routeCoords.count > 1 {
                         MapPolyline(coordinates: routeCoords)
                             .stroke(LocusTheme.accent, lineWidth: 5)
                     }
-                    if drawnPath.count > 1 {
-                        MapPolyline(coordinates: drawnPath)
-                            .stroke(LocusTheme.accentSecondary, style: StrokeStyle(lineWidth: 4, dash: [6, 4]))
+                    if multiStopWaypoints.count > 1 {
+                        MapPolyline(coordinates: multiStopWaypoints)
+                            .stroke(LocusTheme.accentSecondary, style: StrokeStyle(lineWidth: 3, dash: [4, 5]))
                     }
                 }
                 .mapStyle(mapStyle)
@@ -115,6 +152,18 @@ struct MapHomeView: View {
             .background(Color.black.ignoresSafeArea())
 
             topChrome
+
+            if isRouting {
+                VStack {
+                    Spacer()
+                    Text("正在規劃路線…")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .locusGlass(.regular, in: Capsule())
+                        .padding(.bottom, 160)
+                }
+            }
         }
         .onAppear {
             session.startLocationUpdates()
@@ -131,33 +180,127 @@ struct MapHomeView: View {
                 importGPX(url)
             }
         }
-        .sheet(isPresented: $showRouteSheet) {
-            RoutePlannerSheet(
-                start: $routeStart,
-                end: $routeEnd,
-                isRouting: $isRouting,
-                onBuild: buildRoadRoute,
-                onPlay: playRoute,
-                onImportGPX: { showGPXImporter = true },
-                onExportGPX: exportGPX,
-                onUseDrawn: {
-                    routeCoords = RouteBuilder.sample(coordinates: drawnPath, every: 10)
-                    drawnPath.removeAll()
-                    drawMode = false
+        .sheet(item: $pendingPin) { pending in
+            PinActionSheet(
+                onTeleport: {
+                    session.teleport(to: pending.coordinate, pairing: pairing)
+                },
+                onNavigate: {
+                    presentSpeedPicker(.navigate(pending.coordinate))
+                },
+                onMultiStop: {
+                    multiStopActive = true
+                    multiStopWaypoints = [pending.coordinate]
+                },
+                onJoystick: {
+                    session.startJoystick(pairing: pairing, at: pending.coordinate)
                 }
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.height(330)])
+            .presentationDragIndicator(.visible)
         }
+        .sheet(item: $speedPickerPayload) { payload in
+            SpeedPickerSheet(
+                title: payload.context.title,
+                mode: $pickedMode,
+                speedMPS: $pickedSpeed,
+                isCustom: $pickedIsCustom,
+                onConfirm: { startFollowing(payload.context) },
+                onCancel: {}
+            )
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .sheet(isPresented: $showPlaces) {
+            PlacesView()
+        }
+    }
+
+    private func presentSpeedPicker(_ context: SpeedPickerContext) {
+        pickedMode = session.travelMode
+        pickedSpeed = session.effectiveSpeed
+        pickedIsCustom = session.customSpeed != nil
+        speedPickerPayload = SpeedPickerContextWrapper(context: context)
+    }
+
+    private func startFollowing(_ context: SpeedPickerContext) {
+        switch context {
+        case .navigate(let destination):
+            guard let start = session.currentRealOrSimulated else {
+                session.lastError = "目前抓不到你的位置，請稍後再試。"
+                return
+            }
+            runRoute { try await RouteBuilder.roadRoute(from: start, to: destination, mode: pickedMode) }
+        case .multiStop(let waypoints):
+            // The start is wherever you actually are right now — the pin
+            // that opened the "多點模式" sheet is already the *first stop*
+            // to walk to, not the start itself. Every leg (including the
+            // one from your current position to that first pin) is a real
+            // road route, so you walk the whole way instead of teleporting
+            // to the first pin and only then starting to walk.
+            guard let start = session.currentRealOrSimulated else {
+                session.lastError = "目前抓不到你的位置，請稍後再試。"
+                return
+            }
+            runRoute {
+                var full: [CLLocationCoordinate2D] = []
+                var previous = start
+                for point in waypoints {
+                    let leg = try await RouteBuilder.roadRoute(from: previous, to: point, mode: pickedMode)
+                    full.append(contentsOf: full.isEmpty ? leg : Array(leg.dropFirst()))
+                    previous = point
+                }
+                return full
+            }
+        case .importedGPX(let coords):
+            beginFollowing(coords)
+        }
+    }
+
+    private func runRoute(_ build: @escaping () async throws -> [CLLocationCoordinate2D]) {
+        isRouting = true
+        Task {
+            do {
+                let coords = try await build()
+                await MainActor.run {
+                    isRouting = false
+                    beginFollowing(coords)
+                }
+            } catch {
+                await MainActor.run {
+                    isRouting = false
+                    session.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func beginFollowing(_ coords: [CLLocationCoordinate2D]) {
+        guard coords.count >= 2 else {
+            session.lastError = "路線點數不足，無法開始移動。"
+            return
+        }
+        routeCoords = coords
+        session.travelMode = pickedMode
+        session.customSpeed = pickedIsCustom ? pickedSpeed : nil
+        session.followRoute(coords, pairing: pairing)
     }
 
     private func placePin(at point: CGPoint, proxy: MapProxy) {
         guard let coord = proxy.convert(point, from: .local) else { return }
-        if drawMode {
-            drawnPath.append(coord)
+        if multiStopActive {
+            multiStopWaypoints.append(coord)
         } else {
             session.pin = coord
             pinPlaceName = nil
             pinSelected = false
+            // Center the pin on screen so it's clearly visible while the
+            // action sheet (anchored at the bottom) covers the lower half.
+            withAnimation(.easeInOut(duration: 0.3)) {
+                position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 800, longitudinalMeters: 800))
+            }
+            pendingPin = PendingPin(coordinate: coord)
         }
     }
 
@@ -171,6 +314,10 @@ struct MapHomeView: View {
                 searchResults
             }
 
+            if multiStopActive {
+                multiStopBar
+            }
+
             HStack(alignment: .center, spacing: 10) {
                 mapChromeButtons
                 Spacer(minLength: 0)
@@ -182,11 +329,43 @@ struct MapHomeView: View {
         .safeAreaPadding(.top, 8)
     }
 
+    private var multiStopBar: some View {
+        HStack(spacing: 12) {
+            // Start is your current location, not one of these — these are
+            // only the stops to walk to after that.
+            Text("多點模式：已加入 \(multiStopWaypoints.count) 個停靠點")
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button("取消") {
+                multiStopActive = false
+                multiStopWaypoints.removeAll()
+            }
+            .foregroundStyle(LocusTheme.danger)
+
+            Button("完成") {
+                let points = multiStopWaypoints
+                multiStopActive = false
+                multiStopWaypoints.removeAll()
+                presentSpeedPicker(.multiStop(points))
+            }
+            .fontWeight(.bold)
+            .foregroundStyle(multiStopWaypoints.isEmpty ? .secondary : LocusTheme.accent)
+            .disabled(multiStopWaypoints.isEmpty)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search places", text: $searchText)
+            TextField("搜尋地點", text: $searchText)
                 .textInputAutocapitalization(.words)
                 .focused($searchFocused)
                 .submitLabel(.search)
@@ -206,10 +385,10 @@ struct MapHomeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Clear and dismiss keyboard")
+                .accessibilityLabel("清除並關閉鍵盤")
             }
             if searchFocused {
-                Button("Done") {
+                Button("完成") {
                     searchFocused = false
                 }
                 .font(.subheadline.weight(.semibold))
@@ -249,17 +428,33 @@ struct MapHomeView: View {
 
     private var mapChromeButtons: some View {
         HStack(spacing: 4) {
-            chromeIconButton("square.3.layers.3d") {
-                session.mapStyleIndex = (session.mapStyleIndex + 1) % 3
+            chromeIconButton("gearshape.fill") {
+                showSettings = true
             }
-            chromeIconButton("point.topleft.down.to.point.bottomright.curvepath") {
-                showRouteSheet = true
+
+            chromeIconButton("star.fill") {
+                showPlaces = true
             }
-            chromeIconButton(drawMode ? "pencil.tip.crop.circle.badge.minus" : "pencil.tip.crop.circle") {
-                drawMode.toggle()
-                if !drawMode { drawnPath.removeAll() }
+
+            Menu {
+                Button {
+                    showGPXImporter = true
+                } label: {
+                    Label("匯入 GPX", systemImage: "square.and.arrow.down")
+                }
+                Button {
+                    exportGPX()
+                } label: {
+                    Label("匯出目前路線", systemImage: "square.and.arrow.up")
+                }
+                .disabled(routeCoords.isEmpty)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            .foregroundStyle(drawMode ? LocusTheme.accentSecondary : .primary)
+            .foregroundStyle(.primary)
 
             if session.pin != nil {
                 chromeIconButton("star.circle") {
@@ -289,7 +484,7 @@ struct MapHomeView: View {
         .locusGlass(.interactive, in: Circle())
         .foregroundStyle(.primary)
         .contentShape(Circle())
-        .accessibilityLabel("Current location")
+        .accessibilityLabel("目前位置")
     }
 
     /// Centers on the spoofed fix while spoofing, otherwise the real GPS —
@@ -354,59 +549,26 @@ struct MapHomeView: View {
         }
     }
 
-    private func buildRoadRoute() {
-        guard let start = routeStart ?? session.simulated ?? session.pin,
-              let end = routeEnd else {
-            session.lastError = "Set a route start and end."
-            return
-        }
-        isRouting = true
-        Task {
-            do {
-                let coords = try await RouteBuilder.roadRoute(from: start, to: end, mode: session.travelMode)
-                await MainActor.run {
-                    routeCoords = coords
-                    isRouting = false
-                }
-            } catch {
-                await MainActor.run {
-                    isRouting = false
-                    session.lastError = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    private func playRoute() {
-        let path = routeCoords.isEmpty ? drawnPath : routeCoords
-        guard path.count >= 2 else {
-            session.lastError = "Build or draw a route first."
-            return
-        }
-        showRouteSheet = false
-        session.followRoute(path, pairing: pairing)
-    }
-
     private func importGPX(_ url: URL) {
         do {
             let coords = try GPXCodec.parse(url)
-            routeCoords = RouteBuilder.sample(coordinates: coords, every: 10)
+            let sampled = RouteBuilder.sample(coordinates: coords, every: 10)
             if let first = coords.first {
                 session.pin = first
                 position = .region(MKCoordinateRegion(center: first, latitudinalMeters: 2000, longitudinalMeters: 2000))
             }
+            presentSpeedPicker(.importedGPX(sampled))
         } catch {
             session.lastError = error.localizedDescription
         }
     }
 
     private func exportGPX() {
-        let path = routeCoords.isEmpty ? drawnPath : routeCoords
-        guard !path.isEmpty else {
-            session.lastError = "Nothing to export."
+        guard !routeCoords.isEmpty else {
+            session.lastError = "沒有可以匯出的內容。"
             return
         }
-        let gpx = GPXCodec.export(path)
+        let gpx = GPXCodec.export(routeCoords)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Locus-Route.gpx")
         do {
             try gpx.data(using: .utf8)?.write(to: url)
@@ -419,6 +581,93 @@ struct MapHomeView: View {
             session.lastError = error.localizedDescription
         }
     }
+}
+
+/// Bottom sheet shown after dropping a pin — matches the "change your
+/// location" style reference: plain list of modes anchored to the bottom,
+/// map stays visible (and centered on the pin) above it.
+private struct PinActionSheet: View {
+    var onTeleport: () -> Void
+    var onNavigate: () -> Void
+    var onMultiStop: () -> Void
+    var onJoystick: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("更改你的位置")
+                .font(.headline)
+                .padding(.top, 18)
+                .padding(.bottom, 14)
+
+            Divider()
+            row(icon: "bolt.fill", title: "傳送模式") {
+                dismiss()
+                onTeleport()
+            }
+            Divider().padding(.leading, 56)
+            row(icon: "arrow.triangle.turn.up.right.diamond.fill", title: "導航模式") {
+                dismiss()
+                onNavigate()
+            }
+            Divider().padding(.leading, 56)
+            row(icon: "mappin.and.ellipse", title: "多點模式") {
+                dismiss()
+                onMultiStop()
+            }
+            Divider().padding(.leading, 56)
+            row(icon: "dot.circle.and.hand.point.up.left.fill", title: "搖桿模式") {
+                dismiss()
+                onJoystick()
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func row(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Image(systemName: icon)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(LocusTheme.accent)
+                    .frame(width: 24)
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Small numbered marker for multi-stop waypoints, in visit order.
+private struct WaypointMarker: View {
+    let number: Int
+
+    var body: some View {
+        ZStack {
+            Circle().fill(LocusTheme.accentSecondary).frame(width: 26, height: 26)
+                .overlay(Circle().stroke(.white, lineWidth: 2))
+            Text("\(number)")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+        }
+        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+    }
+}
+
+/// `SpeedPickerContext` isn't `Identifiable`-friendly to store directly in a
+/// `@State` across view updates without a stable box; this wrapper gives the
+/// `.sheet(item:)` modifier a stable identity per presentation.
+private struct SpeedPickerContextWrapper: Identifiable {
+    let context: SpeedPickerContext
+    var id: String { context.id }
 }
 
 private extension UIWindowScene {

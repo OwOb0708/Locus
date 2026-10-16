@@ -13,10 +13,16 @@ enum LocalDevVPN {
         UIApplication.shared.canOpenURL(detectURL)
     }
 
-    /// LocalDevVPN puts the tunnel network on a `10.7.0.x` (or custom) utun when connected.
+    /// LocalDevVPN assigns its own "Tunnel IP" (`TunnelConfig.localIP`, e.g. 10.7.1.1)
+    /// to this iPhone's utun interface when the VPN is active. That's a real local
+    /// interface address, unlike `TunnelConfig.targetIP` ("Device IP"), which is a
+    /// virtual peer address the tunnel forwards traffic *to* and never appears in
+    /// `getifaddrs()`. Checking against the device/dial IP here is what made this
+    /// flag flip depending on which of the two numbers happened to be saved in
+    /// Settings — it must always check the local tunnel IP, not the dial target.
     static var isConnected: Bool {
         let addresses = ipv4InterfaceAddresses()
-        let target = TunnelConfig.targetIP
+        let target = TunnelConfig.localIP
         if addresses.contains(target) { return true }
 
         let parts = target.split(separator: ".")

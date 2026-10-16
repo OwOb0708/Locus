@@ -4,8 +4,6 @@ import NetworkExtension
 struct RootView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
-    @State private var showSettings = false
-    @State private var showPlaces = false
 
     var body: some View {
         // Bottom chrome is a sibling overlay aligned to the bottom — no full-screen
@@ -13,24 +11,19 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             MapHomeView()
 
-            BottomControlsView(
-                showSettings: $showSettings,
-                showPlaces: $showPlaces
-            )
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-        }
-        .sheet(isPresented: $showPlaces) {
-            PlacesView()
+            // Settings/Places now live in MapHomeView's top chrome row; this
+            // tray only matters once there's an active session to control.
+            if session.isSpoofing || session.joystickActive {
+                BottomControlsView()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
         }
         .alert("Locus", isPresented: Binding(
             get: { session.lastError != nil },
             set: { if !$0 { session.lastError = nil } }
         )) {
-            Button("OK", role: .cancel) { session.lastError = nil }
+            Button("好", role: .cancel) { session.lastError = nil }
         } message: {
             Text(session.lastError ?? "")
         }
@@ -54,13 +47,13 @@ struct StatusBarView: View {
         case .idle:
             return tunnelConnected ? .notSpoofing : .connectVPN
         case .connecting:
-            return .status("Connecting…")
+            return .status("連線中…")
         case .active:
-            return .status("Spoofing")
+            return .status("模擬定位中")
         case .reconnecting:
-            return .status("Reconnecting…")
+            return .status("重新連線中…")
         case .dropped(let reason):
-            return .status(reason.isEmpty ? "Disconnected" : "Disconnected — \(reason)")
+            return .status(reason.isEmpty ? "已斷線" : "已斷線 — \(reason)")
         }
     }
 
@@ -82,8 +75,8 @@ struct StatusBarView: View {
 
     private var title: String {
         switch display {
-        case .notSpoofing: return "Not Spoofing"
-        case .connectVPN: return "Connect LocalDevVPN"
+        case .notSpoofing: return "未模擬定位"
+        case .connectVPN: return "請連接 LocalDevVPN"
         case .status(let text): return text
         }
     }
@@ -155,11 +148,17 @@ struct StatusBarView: View {
     }
 }
 
+/// Bottom tray is deliberately minimal now: how to move is chosen from the
+/// map-tap picker (teleport / navigate / multi-stop / joystick), so this bar
+/// only needs quick access to settings, favorites, and stopping an active spoof.
 struct BottomControlsView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
-    @Binding var showSettings: Bool
-    @Binding var showPlaces: Bool
+
+    @State private var showSpeedAdjust = false
+    @State private var liveMode: TravelMode = .walk
+    @State private var liveSpeed: CLLocationSpeed = TravelMode.walk.baseSpeed
+    @State private var liveIsCustom = false
 
     private let trayShape = RoundedRectangle(cornerRadius: 28, style: .continuous)
 
@@ -173,58 +172,55 @@ struct BottomControlsView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            HStack(spacing: 8) {
-                ForEach(TravelMode.allCases) { mode in
-                    let selected = session.travelMode == mode
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
+                // Lets you change pace while a route/joystick is already
+                // moving — `followRoute`/joystick both read `effectiveSpeed`
+                // live each step, so this takes effect immediately.
+                if session.isSpoofing {
                     Button {
-                        session.travelMode = mode
+                        liveMode = session.travelMode
+                        liveSpeed = session.effectiveSpeed
+                        liveIsCustom = session.customSpeed != nil
+                        showSpeedAdjust = true
                     } label: {
-                        Image(systemName: mode.icon)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(selected ? .black : .primary)
-                            .frame(width: 44, height: 40)
-                            .background(
-                                Capsule().fill(selected ? LocusTheme.accent : Color.primary.opacity(0.08))
-                            )
+                        HStack(spacing: 6) {
+                            Image(systemName: "speedometer")
+                            Text(String(format: "%.0f km/h", session.effectiveSpeed * 3.6))
+                                .lineLimit(1)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 10)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if session.joystickActive {
+                    Button {
+                        session.stopJoystick()
+                    } label: {
+                        Text("結束遙控")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.primary)
+                            .frame(minWidth: 96)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 10)
+                            .background(Capsule().fill(Color.primary.opacity(0.08)))
                             .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 10) {
-                trayIcon("gearshape.fill") { showSettings = true }
-                trayIcon("star.fill") { showPlaces = true }
-
-                Button {
-                    if session.joystickActive {
-                        session.stopJoystick()
-                    } else {
-                        session.startJoystick(pairing: pairing)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "dot.circle.and.hand.point.up.left.fill")
-                        Text(session.joystickActive ? "On" : "Joy")
-                            .lineLimit(1)
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(session.joystickActive ? .black : .primary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        Capsule().fill(session.joystickActive ? LocusTheme.accentSecondary : Color.primary.opacity(0.08))
-                    )
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
 
                 if session.isSpoofing {
                     Button {
                         session.stop(pairing: pairing)
                     } label: {
-                        Text("Stop")
+                        Text("停止")
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
                             .frame(minWidth: 72)
@@ -234,25 +230,6 @@ struct BottomControlsView: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                } else {
-                    Button {
-                        guard let pin = session.pin else {
-                            session.lastError = "Tap the map to drop a pin first."
-                            return
-                        }
-                        session.teleport(to: pin, pairing: pairing)
-                    } label: {
-                        Text("Teleport")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.black)
-                            .frame(minWidth: 96)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 10)
-                            .background(Capsule().fill(LocusTheme.accent))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(session.isBusy)
                 }
             }
         }
@@ -260,18 +237,19 @@ struct BottomControlsView: View {
         .locusGlass(.regular, in: trayShape)
         // Whole tray absorbs taps so near-misses don't fall through to the map.
         .contentShape(trayShape)
-    }
-
-    private func trayIcon(_ systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(Color.primary.opacity(0.08)))
-                .contentShape(Circle())
+        .sheet(isPresented: $showSpeedAdjust) {
+            SpeedPickerSheet(
+                title: "調整目前速度",
+                mode: $liveMode,
+                speedMPS: $liveSpeed,
+                isCustom: $liveIsCustom,
+                onConfirm: {
+                    session.travelMode = liveMode
+                    session.customSpeed = liveIsCustom ? liveSpeed : nil
+                },
+                onCancel: {}
+            )
         }
-        .buttonStyle(.plain)
     }
 }
 
