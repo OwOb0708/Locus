@@ -80,4 +80,4 @@ xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
 
 ## 授權
 
-MIT 授權。`Vendor/idevice` 內含 idevice FFI（同樣是 MIT 授權）。Locus 是獨立的開源專案，與 Mirage／Wapixel 沒有任何關係。
+MIT 授權。基於 [ChrisMack32/Locus](https://github.com/ChrisMack32/Locus)（同樣是 MIT 授權）修改。`Vendor/idevice` 內含 idevice FFI（同樣是 MIT 授權）。Locus 與 Mirage／Wapixel 沒有任何關係。
