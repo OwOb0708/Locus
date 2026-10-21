@@ -1,5 +1,7 @@
 # Locus
 
+> 本頁為**繁體中文版**。英文原版請見 [ChrisMack32/Locus](https://github.com/ChrisMack32/Locus)。
+
 免費且開源的 iPhone 定位瞬移工具。點地圖、搜尋地點，或沿路線移動——Locus 透過 Apple 的**開發者定位服務**把座標注入 `locationd`，所以地圖和其他 App 看到的是真正被模擬的 GPS（不是靠 Wi‑Fi 定位猜測，之後會被戶外 GPS 蓋掉的那種）。
 
 <p align="center">
