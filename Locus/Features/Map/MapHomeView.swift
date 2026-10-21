@@ -422,7 +422,7 @@ struct MapHomeView: View {
                 showPikminPostList = true
             }
 
-            if !searchText.isEmpty && !search.results.isEmpty {
+            if !searchText.isEmpty && (!search.results.isEmpty || typedCoordinate != nil) {
                 searchResults
             }
 
@@ -489,7 +489,7 @@ struct MapHomeView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("搜尋地點", text: $searchText)
+            TextField("搜尋地點或輸入座標", text: $searchText)
                 .textInputAutocapitalization(.words)
                 .focused($searchFocused)
                 .submitLabel(.search)
@@ -525,8 +525,53 @@ struct MapHomeView: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
+    /// Lets pasting/typing raw coordinates (e.g. "25.0330, 121.5654") jump
+    /// straight there, the same way a search result would — MKLocalSearchCompleter
+    /// doesn't return anything useful for a bare lat/lon string.
+    private var typedCoordinate: CLLocationCoordinate2D? {
+        Self.parseCoordinate(searchText)
+    }
+
+    private static func parseCoordinate(_ text: String) -> CLLocationCoordinate2D? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.contains(",")
+            ? trimmed.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            : trimmed.split(separator: " ").map(String.init)
+        guard parts.count == 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else { return nil }
+        let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+        return coordinate
+    }
+
     private var searchResults: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let coordinate = typedCoordinate {
+                Button {
+                    selectCoordinate(coordinate)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "mappin.and.ellipse")
+                            .foregroundStyle(LocusTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("前往座標").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                            Text(String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if !search.results.isEmpty {
+                    Divider().opacity(0.3)
+                }
+            }
+
             ForEach(search.results.prefix(5), id: \.self) { item in
                 Button {
                     select(completion: item)
@@ -671,6 +716,22 @@ struct MapHomeView: View {
                 }
             }
         }
+    }
+
+    private func selectCoordinate(_ coordinate: CLLocationCoordinate2D) {
+        searchText = ""
+        search.query = ""
+        searchFocused = false
+        if multiStopActive {
+            multiStopWaypoints.append(coordinate)
+            return
+        }
+        session.pin = coordinate
+        pinPlaceName = nil
+        withAnimation(.easeInOut(duration: 0.3)) {
+            position = .region(MKCoordinateRegion(center: coordinate, latitudinalMeters: 1200, longitudinalMeters: 1200))
+        }
+        pendingPin = PendingPin(coordinate: coordinate)
     }
 
     private func importGPX(_ url: URL) {
