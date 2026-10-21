@@ -3,13 +3,11 @@
 免費且開源的 iPhone 定位瞬移工具。點地圖、搜尋地點，或沿路線移動——Locus 透過 Apple 的**開發者定位服務**把座標注入 `locationd`，所以地圖和其他 App 看到的是真正被模擬的 GPS（不是靠 Wi‑Fi 定位猜測，之後會被戶外 GPS 蓋掉的那種）。
 
 <p align="center">
-  <img src="docs/screenshots/map.png" alt="Locus 地圖與模擬圖釘" width="180" />
-  <img src="docs/screenshots/spoofing.png" alt="Locus 模擬定位畫面" width="180" />
-  <img src="docs/screenshots/joystick.png" alt="Locus 搖桿操控" width="180" />
-  <img src="docs/screenshots/route.png" alt="Locus 地圖上的路線" width="180" />
+  <img src="docs/screenshots/menu.png" alt="Locus 點地圖後的移動模式選單" width="180" />
+  <img src="docs/screenshots/navigate.png" alt="Locus 導航設定：移動方式與速度" width="180" />
+  <img src="docs/screenshots/route.png" alt="Locus 地圖上的導航路線" width="180" />
+  <img src="docs/screenshots/pikmin.png" alt="Locus 的 Pikmin 菇點／花點清單" width="180" />
 </p>
-
-> 上面的截圖是舊版介面，實際畫面已經改版（新的點地圖選單、底部工具列都不一樣），截圖之後會更新。
 
 ## 功能
 
