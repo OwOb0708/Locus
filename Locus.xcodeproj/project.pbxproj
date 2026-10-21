@@ -14,6 +14,7 @@
 		2D719677D77D851D73D2BA60 /* PairingDocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E6BE765DFC4FB848609C8AA /* PairingDocumentPicker.swift */; };
 		31655D57308771B6000D14F1 /* PikminPostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31655D56308771B6000D14F1 /* PikminPostStore.swift */; };
 		31655D593088733A000D14F1 /* PikminPosts.json in Resources */ = {isa = PBXBuildFile; fileRef = 31655D583088733A000D14F1 /* PikminPosts.json */; };
+		31655D5B3088ACB5000D14F1 /* PickminPostcards.json in Resources */ = {isa = PBXBuildFile; fileRef = 31655D5A3088ACB5000D14F1 /* PickminPostcards.json */; };
 		316C86E83081DC9E001C5C81 /* SpeedPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316C86E73081DC9E001C5C81 /* SpeedPickerSheet.swift */; };
 		39FCB8C0E7050B9161E600C6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1C1367D937C33DF4F1FBE6 /* SettingsView.swift */; };
 		3F84179EF76E8AA074797361 /* SavedPlace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 799094E9B1F051BEAD82D2C1 /* SavedPlace.swift */; };
@@ -45,6 +46,7 @@
 		2E6BE765DFC4FB848609C8AA /* PairingDocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingDocumentPicker.swift; sourceTree = "<group>"; };
 		31655D56308771B6000D14F1 /* PikminPostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PikminPostStore.swift; sourceTree = "<group>"; };
 		31655D583088733A000D14F1 /* PikminPosts.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PikminPosts.json; sourceTree = "<group>"; };
+		31655D5A3088ACB5000D14F1 /* PickminPostcards.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PickminPostcards.json; sourceTree = "<group>"; };
 		316C86E73081DC9E001C5C81 /* SpeedPickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeedPickerSheet.swift; sourceTree = "<group>"; };
 		361C48381EA09BB299BD110E /* LocusEasterEggView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocusEasterEggView.swift; sourceTree = "<group>"; };
 		377FB9983B927B5898D09160 /* LocationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationEngine.swift; sourceTree = "<group>"; };
@@ -216,6 +218,7 @@
 				2D4CA41C622A34E45EF21F54 /* Assets.xcassets */,
 				3B51D4F370EFC220A54A082F /* Locus.entitlements */,
 				31655D583088733A000D14F1 /* PikminPosts.json */,
+				31655D5A3088ACB5000D14F1 /* PickminPostcards.json */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -282,6 +285,7 @@
 				170627CC7AAA8335B2A3277F /* AppIcon.icon in Resources */,
 				74A5BCF6953128864737A070 /* Assets.xcassets in Resources */,
 				31655D593088733A000D14F1 /* PikminPosts.json in Resources */,
+				31655D5B3088ACB5000D14F1 /* PickminPostcards.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

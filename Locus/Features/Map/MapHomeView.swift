@@ -46,6 +46,7 @@ struct MapHomeView: View {
     @StateObject private var search = PlaceSearchCompleter()
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
+    @State private var isSearchingAddress = false
     @FocusState private var searchFocused: Bool
     @State private var routeCoords: [CLLocationCoordinate2D] = []
     @State private var isRouting = false
@@ -415,11 +416,17 @@ struct MapHomeView: View {
             PikminPostListButton(
                 mushroomCount: postStore.mushroomCount,
                 flowerCount: postStore.flowerCount,
+                hiddenCount: postStore.hiddenCount,
+                seedlingCount: postStore.seedlingCount,
                 isLoading: postStore.isLoading,
+                isRefreshingSeedlings: postStore.isRefreshingSeedlings,
                 errorMessage: postStore.errorMessage
             ) {
                 searchFocused = false
                 showPikminPostList = true
+                Task {
+                    await postStore.refreshSeedlings()
+                }
             }
 
             if !searchText.isEmpty && (!search.results.isEmpty || typedCoordinate != nil) {
@@ -494,7 +501,7 @@ struct MapHomeView: View {
                 .focused($searchFocused)
                 .submitLabel(.search)
                 .onSubmit {
-                    searchFocused = false
+                    submitSearch()
                 }
                 .onChange(of: searchText) { _, value in
                     search.query = value
@@ -511,9 +518,13 @@ struct MapHomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除並關閉鍵盤")
             }
-            if searchFocused {
-                Button("完成") {
-                    searchFocused = false
+            if isSearchingAddress {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("正在搜尋地址")
+            } else if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("搜尋") {
+                    submitSearch()
                 }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.plain)
@@ -698,24 +709,102 @@ struct MapHomeView: View {
     }
 
     private func select(completion: MKLocalSearchCompletion) {
-        Task {
+        guard !isSearchingAddress else { return }
+        isSearchingAddress = true
+        Task { @MainActor in
+            defer { isSearchingAddress = false }
             let request = MKLocalSearch.Request(completion: completion)
             if let response = try? await MKLocalSearch(request: request).start(),
                let item = response.mapItems.first {
-                let coord = item.placemark.coordinate
-                let title = item.name ?? completion.title
-                await MainActor.run {
-                    session.pin = coord
-                    pinPlaceName = title
-                    position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 1200, longitudinalMeters: 1200))
-                    searchText = ""
-                    search.query = ""
-                    searchFocused = false
-                    session.addFavorite(name: title, coordinate: coord)
-                    session.pushNamedRecent(name: title, coordinate: coord)
-                }
+                applySearchResult(item, fallbackName: completion.title)
+            } else {
+                session.lastError = "找不到這個地點，請確認地址後再試一次。"
             }
         }
+    }
+
+    /// A completer only offers suggestions; pressing Search must perform a real
+    /// natural-language lookup so a pasted full postal address works as expected.
+    private func submitSearch() {
+        let originalQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !originalQuery.isEmpty, !isSearchingAddress else { return }
+        searchFocused = false
+
+        if let coordinate = Self.parseCoordinate(originalQuery) {
+            selectCoordinate(coordinate)
+            return
+        }
+
+        isSearchingAddress = true
+        Task { @MainActor in
+            defer { isSearchingAddress = false }
+            let normalizedQuery = Self.normalizedAddressQuery(originalQuery)
+            let queries = normalizedQuery == originalQuery
+                ? [originalQuery]
+                : [normalizedQuery, originalQuery]
+
+            for query in queries {
+                let request = MKLocalSearch.Request(naturalLanguageQuery: query)
+                request.resultTypes = [.address, .pointOfInterest]
+                if let response = try? await MKLocalSearch(request: request).start(),
+                   let item = response.mapItems.first {
+                    applySearchResult(item, fallbackName: originalQuery)
+                    return
+                }
+            }
+
+            session.lastError = "找不到「\(originalQuery)」。請嘗試加入城市、州／縣市或國家名稱。"
+        }
+    }
+
+    /// MapKit understands international addresses more reliably when a localized
+    /// country name pasted directly after a postal code is separated and normalized.
+    private static func normalizedAddressQuery(_ query: String) -> String {
+        var result = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let countryAliases = [
+            "美國": "United States",
+            "美国": "United States",
+            "臺灣": "Taiwan",
+            "台灣": "Taiwan",
+            "日本": "Japan",
+            "韓國": "South Korea",
+            "韩国": "South Korea"
+        ]
+        for (localizedName, searchName) in countryAliases {
+            result = result.replacingOccurrences(of: localizedName, with: ", \(searchName)")
+        }
+        result = result.replacingOccurrences(
+            of: "\\s*,\\s*,+",
+            with: ", ",
+            options: .regularExpression
+        )
+        return result
+    }
+
+    @MainActor
+    private func applySearchResult(_ item: MKMapItem, fallbackName: String) {
+        let coordinate = item.placemark.coordinate
+        let title = item.name ?? fallbackName
+        searchText = ""
+        search.query = ""
+        searchFocused = false
+        pinPlaceName = title
+        session.pushNamedRecent(name: title, coordinate: coordinate)
+
+        if multiStopActive {
+            multiStopWaypoints.append(coordinate)
+            return
+        }
+
+        session.pin = coordinate
+        withAnimation(.easeInOut(duration: 0.3)) {
+            position = .region(MKCoordinateRegion(
+                center: coordinate,
+                latitudinalMeters: 1200,
+                longitudinalMeters: 1200
+            ))
+        }
+        pendingPin = PendingPin(coordinate: coordinate)
     }
 
     private func selectCoordinate(_ coordinate: CLLocationCoordinate2D) {
@@ -834,29 +923,24 @@ private struct PinActionSheet: View {
 private struct PikminPostListButton: View {
     let mushroomCount: Int
     let flowerCount: Int
+    let hiddenCount: Int
+    let seedlingCount: Int
     let isLoading: Bool
+    let isRefreshingSeedlings: Bool
     let errorMessage: String?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Text("🍄")
-                Text("菇點")
-                Text("\(mushroomCount)")
-                    .foregroundStyle(.secondary)
-
-                Divider()
-                    .frame(height: 18)
-
-                Text("🌸")
-                Text("花點")
-                Text("\(flowerCount)")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 7) {
+                countLabel("🍄", mushroomCount)
+                countLabel("🌸", flowerCount)
+                countLabel("🖼️", hiddenCount)
+                countLabel("🟡", seedlingCount)
 
                 Spacer(minLength: 4)
 
-                if isLoading {
+                if isLoading || isRefreshingSeedlings {
                     ProgressView()
                         .controlSize(.small)
                 } else if errorMessage != nil {
@@ -868,7 +952,7 @@ private struct PikminPostListButton: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(.subheadline.weight(.semibold))
+            .font(.caption.weight(.semibold))
             .foregroundStyle(.primary)
             .padding(.horizontal, 12)
             .frame(minHeight: 44)
@@ -877,7 +961,15 @@ private struct PikminPostListButton: View {
         .buttonStyle(.plain)
         .locusGlass(.clear, in: Capsule())
         .disabled(isLoading)
-        .accessibilityLabel("開啟菇點與花點清單")
+        .accessibilityLabel("開啟菇點、花點、隱藏與金盆清單")
+    }
+
+    private func countLabel(_ symbol: String, _ count: Int) -> some View {
+        HStack(spacing: 2) {
+            Text(symbol)
+            Text("\(count)")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -893,16 +985,31 @@ private struct PikminPostListView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("地點種類", selection: $selectedKind) {
-                    Text("🍄 菇點（\(store.mushroomPosts.count)）")
-                        .tag(PikminPost.Kind.mushroom)
-                    Text("🌸 花點（\(store.flowerPosts.count)）")
-                        .tag(PikminPost.Kind.flower)
+                    ForEach(PikminPost.Kind.allCases, id: \.self) { kind in
+                        Text("\(kind.symbol) \(store.posts(for: kind).count)")
+                            .tag(kind)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .padding()
 
+                HStack {
+                    Text("\(selectedKind.symbol) \(selectedKind.title)")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if selectedKind == .seedling, store.isRefreshingSeedlings {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在更新金盆")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
                 PikminPostResultsList(
-                    posts: selectedKind == .mushroom ? store.mushroomPosts : store.flowerPosts,
+                    posts: store.posts(for: selectedKind),
                     isLoading: store.isLoading,
                     errorMessage: store.errorMessage,
                     onSelect: onSelect
@@ -979,7 +1086,7 @@ private struct PikminPostRow: View {
                             .scaledToFill()
                     } else {
                         ZStack {
-                            (post.kind == .mushroom ? Color.brown : Color.pink).opacity(0.18)
+                            placeholderColor.opacity(0.18)
                             Text(post.kind.symbol)
                                 .font(.title2)
                         }
@@ -996,7 +1103,10 @@ private struct PikminPostRow: View {
 
                     HStack(spacing: 6) {
                         Text(post.kind.title)
-                        if !post.country.isEmpty {
+                        if !post.location.isEmpty {
+                            Text("·")
+                            Text(post.location)
+                        } else if !post.country.isEmpty {
                             Text("·")
                             Text(post.country)
                         }
@@ -1014,6 +1124,15 @@ private struct PikminPostRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("點一下選擇移動方式")
+    }
+
+    private var placeholderColor: Color {
+        switch post.kind {
+        case .mushroom: .brown
+        case .flower: .pink
+        case .hidden: .gray
+        case .seedling: .yellow
+        }
     }
 }
 
