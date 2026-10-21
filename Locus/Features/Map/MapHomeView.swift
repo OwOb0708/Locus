@@ -414,10 +414,6 @@ struct MapHomeView: View {
             searchBar
 
             PikminPostListButton(
-                mushroomCount: postStore.mushroomCount,
-                flowerCount: postStore.flowerCount,
-                hiddenCount: postStore.hiddenCount,
-                seedlingCount: postStore.seedlingCount,
                 isLoading: postStore.isLoading,
                 isRefreshingSeedlings: postStore.isRefreshingSeedlings,
                 errorMessage: postStore.errorMessage
@@ -921,10 +917,6 @@ private struct PinActionSheet: View {
 }
 
 private struct PikminPostListButton: View {
-    let mushroomCount: Int
-    let flowerCount: Int
-    let hiddenCount: Int
-    let seedlingCount: Int
     let isLoading: Bool
     let isRefreshingSeedlings: Bool
     let errorMessage: String?
@@ -932,11 +924,18 @@ private struct PikminPostListButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
-                countLabel("🍄", mushroomCount)
-                countLabel("🌸", flowerCount)
-                countLabel("🖼️", hiddenCount)
-                countLabel("🟡", seedlingCount)
+            HStack(spacing: 12) {
+                Image(systemName: "map.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(LocusTheme.accent)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pikmin 地點")
+                        .font(.subheadline.weight(.semibold))
+                    Text("菇點、花點、明信片與金盆")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Spacer(minLength: 4)
 
@@ -952,24 +951,15 @@ private struct PikminPostListButton: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(.caption.weight(.semibold))
             .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            .frame(minHeight: 44)
-            .contentShape(Capsule())
+            .padding(.horizontal, 14)
+            .frame(minHeight: 54)
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
-        .locusGlass(.clear, in: Capsule())
+        .locusGlass(.clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .disabled(isLoading)
         .accessibilityLabel("開啟菇點、花點、隱藏與金盆清單")
-    }
-
-    private func countLabel(_ symbol: String, _ count: Int) -> some View {
-        HStack(spacing: 2) {
-            Text(symbol)
-            Text("\(count)")
-                .foregroundStyle(.secondary)
-        }
     }
 }
 
