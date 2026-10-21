@@ -14,8 +14,12 @@ struct RootView: View {
             MapHomeView()
 
             // Settings/Places now live in MapHomeView's top chrome row; this
-            // tray only matters once there's an active session to control.
-            if session.isSpoofing || session.joystickActive {
+            // tray only matters while something is actually moving — once
+            // idle (teleported, held at the destination, etc.) there's
+            // nothing left for it to control. "回到真實位置" lives in the
+            // top chrome instead, since that needs to stay reachable even
+            // when nothing is moving.
+            if session.routeProgress != nil || session.joystickActive {
                 BottomControlsView()
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
@@ -185,86 +189,69 @@ struct BottomControlsView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            // Two balanced blocks (progress on the left, controls on the
-            // right) instead of stacking a right-aligned controls row above
-            // a separately-aligned progress row — that left a large diagonal
-            // gap between them.
-            HStack(alignment: .top, spacing: 14) {
+            // Everything on one row — this tray only shows while a route or
+            // joystick is actually moving, so speed/stop are always relevant
+            // and don't need to be split into a separate stacked row.
+            HStack(spacing: 10) {
                 if let progress = session.routeProgress {
                     RouteProgressView(progress: progress)
                 }
 
                 Spacer(minLength: 8)
 
-                VStack(alignment: .trailing, spacing: 10) {
-                    // Lets you change pace while a route/joystick is already
-                    // moving — `followRoute`/joystick both read `effectiveSpeed`
-                    // live each step, so this takes effect immediately.
-                    if session.isSpoofing {
-                        Button {
-                            liveMode = session.travelMode
-                            liveSpeed = session.effectiveSpeed
-                            liveIsCustom = session.customSpeed != nil
-                            showSpeedAdjust = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "speedometer")
-                                Text(String(format: "%.0f km/h", session.effectiveSpeed * 3.6))
-                                    .lineLimit(1)
-                            }
-                            .font(.subheadline.weight(.semibold))
+                // Lets you change pace while a route/joystick is already
+                // moving — `followRoute`/joystick both read `effectiveSpeed`
+                // live each step, so this takes effect immediately.
+                Button {
+                    liveMode = session.travelMode
+                    liveSpeed = session.effectiveSpeed
+                    liveIsCustom = session.customSpeed != nil
+                    showSpeedAdjust = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "speedometer")
+                        Text(String(format: "%.0f km/h", session.effectiveSpeed * 3.6))
+                            .lineLimit(1)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 10)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if session.joystickActive {
+                    Button {
+                        session.stopJoystick()
+                    } label: {
+                        Text("結束遙控")
+                            .font(.subheadline.weight(.bold))
                             .foregroundStyle(.primary)
-                            .padding(.vertical, 10)
+                            .frame(minWidth: 88)
+                            .padding(.vertical, 12)
                             .padding(.horizontal, 10)
                             .background(Capsule().fill(Color.primary.opacity(0.08)))
                             .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
                     }
+                    .buttonStyle(.plain)
+                }
 
-                    HStack(spacing: 8) {
-                        if session.isSpoofing {
-                            // Stop just holds at the current spot — this is
-                            // the explicit opt-in to actually drop back to
-                            // the device's real GPS fix.
-                            IconButton(systemName: "location.slash.fill") {
-                                session.returnToRealLocation(pairing: pairing)
-                            }
-                            .accessibilityLabel("回到真實位置")
-                        }
-
-                        if session.joystickActive {
-                            Button {
-                                session.stopJoystick()
-                            } label: {
-                                Text("結束遙控")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(.primary)
-                                    .frame(minWidth: 88)
-                                    .padding(.vertical, 12)
-                                    .padding(.horizontal, 10)
-                                    .background(Capsule().fill(Color.primary.opacity(0.08)))
-                                    .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if session.isSpoofing {
-                            Button {
-                                session.stop(pairing: pairing)
-                            } label: {
-                                Text("停止")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .frame(minWidth: 64)
-                                    .padding(.vertical, 12)
-                                    .padding(.horizontal, 8)
-                                    .background(Capsule().fill(LocusTheme.danger))
-                                    .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
+                if session.routeProgress != nil {
+                    Button {
+                        session.stop(pairing: pairing)
+                    } label: {
+                        Text("停止")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 64)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 8)
+                            .background(Capsule().fill(LocusTheme.danger))
+                            .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -295,19 +282,14 @@ private struct RouteProgressView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
                 Label(distanceText, systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-
-                HStack(spacing: 6) {
-                    Label(countdownText(at: context.date), systemImage: "timer")
-                    Text("·").foregroundStyle(.secondary)
-                    Text(progress.estimatedArrival, format: .dateTime.hour().minute())
-                        .foregroundStyle(.secondary)
-                }
+                Text("·").foregroundStyle(.secondary)
+                Label(countdownText(at: context.date), systemImage: "timer")
             }
             .font(.caption.monospacedDigit().weight(.semibold))
             .lineLimit(1)
-            .minimumScaleFactor(0.8)
+            .minimumScaleFactor(0.75)
             .accessibilityElement(children: .combine)
         }
     }

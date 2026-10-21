@@ -433,6 +433,15 @@ struct MapHomeView: View {
             HStack(alignment: .center, spacing: 10) {
                 mapChromeButtons
                 Spacer(minLength: 0)
+                // Stays reachable regardless of whether a route/joystick is
+                // currently moving — this is the explicit, persistent opt-in
+                // to drop a held simulated position and report real GPS again.
+                if session.simulated != nil {
+                    IconButton(systemName: "location.slash.fill") {
+                        session.returnToRealLocation(pairing: pairing)
+                    }
+                    .accessibilityLabel("回到真實位置")
+                }
                 locateButton
             }
         }
