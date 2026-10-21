@@ -14,12 +14,16 @@
 ## 功能
 
 - 點地圖放圖釘，立即選擇這次要怎麼移動：**傳送**（瞬移）、**導航**（從目前位置自動規劃路線）、**多點模式**（依序走訪你放的每個點）、**搖桿**（即時手動操控）
+- 搜尋地名、完整郵寄地址或經緯度；支援中英文混合地址，例如 `1 Titans Wy, Nashville, TN 37213美國`，選到地點後會直接詢問移動方式
 - 依真實道路與人行步道規劃路線（MapKit），支援走路／跑步／騎車／開車
 - 除了預設的速度檔位，也能自訂精確速度，而且路線或搖桿移動中可以即時調整，不用先停下來重設
+- 移動時顯示剩餘距離與預估到達倒數；抵達目的地後自動結束路線，不必再手動按停止
 - 匯入／匯出 GPX 路線
 - 背景保持連線＋即時狀態列＋斷線通知
 - 收藏與最近地點，收藏可以分類整理
-- 瀏覽 Pikmin Bloom 社群回報的菇點／花點，直接選一個瞬移過去
+- 透過首頁的 **Pikmin 地點**按鈕瀏覽菇點、花點、明信片地點與金盆，清單中可搜尋名稱或國家，選取後再決定移動方式
+- 菇點、花點與明信片的名稱、經緯度及縮圖資料隨 App 保存在本機，不會在每次瀏覽時重新爬取網頁；金盆會即時更新，離線時使用內建快照
+- 來自不同資料來源但座標相同的地點會自動合併，避免清單出現重複項目
 - 首次使用設定精靈
 - 完全在裝置端運作——沒有任何分析或上傳行為
 
@@ -28,6 +32,8 @@
 完整步驟請看 [SETUP.md](SETUP.md)。你可以到 [Releases](https://github.com/OwOb0708/Locus/releases) 抓已經編譯好的 IPA，或是照下面的方式自己從原始碼編譯。
 
 Bundle ID：`com.chrismack.locus`
+
+下載後請確認檔名保留為 `Locus.ipa`，再交給 SideStore、AltStore 或其他側載工具安裝。若通訊軟體把檔案改成沒有 `.ipa` 副檔名的 UUID 名稱，請先在「檔案」App 中重新命名；SideStore 顯示「File does not exist at 'Locus.ipa'」通常代表收到的檔案路徑或副檔名不正確，並非 App bundle 缺失。
 
 ### LiveContainer
 
@@ -79,6 +85,8 @@ xcodegen generate
 xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=YOUR_TEAM_ID build
 ```
+
+目前 `Vendor/idevice/libidevice_ffi.a` 是 iPhone 實機版本，因此請選擇實機或 `generic/platform=iOS` 編譯；直接建置到 iOS Simulator 會因靜態函式庫架構不相容而連結失敗。
 
 ## 授權
 
