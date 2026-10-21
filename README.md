@@ -1,75 +1,77 @@
 # Locus
 
-Free and open-source iPhone location teleport. Tap the map, search a place, or drive a route — Locus injects coordinates through Apple’s **developer location service** into `locationd`, so Maps and other apps see the spoofed GPS (not just a Wi‑Fi lookup that outdoor GPS will overwrite).
+免費且開源的 iPhone 定位瞬移工具。點地圖、搜尋地點，或沿路線移動——Locus 透過 Apple 的**開發者定位服務**把座標注入 `locationd`，所以地圖和其他 App 看到的是真正被模擬的 GPS（不是靠 Wi‑Fi 定位猜測，之後會被戶外 GPS 蓋掉的那種）。
 
 <p align="center">
-  <img src="docs/screenshots/map.png" alt="Locus map with spoof pin" width="180" />
-  <img src="docs/screenshots/spoofing.png" alt="Locus spoofing in 3D" width="180" />
-  <img src="docs/screenshots/joystick.png" alt="Locus joystick controls" width="180" />
-  <img src="docs/screenshots/route.png" alt="Locus route on map" width="180" />
+  <img src="docs/screenshots/map.png" alt="Locus 地圖與模擬圖釘" width="180" />
+  <img src="docs/screenshots/spoofing.png" alt="Locus 模擬定位畫面" width="180" />
+  <img src="docs/screenshots/joystick.png" alt="Locus 搖桿操控" width="180" />
+  <img src="docs/screenshots/route.png" alt="Locus 地圖上的路線" width="180" />
 </p>
 
-## Features
+> 上面的截圖是舊版介面，實際畫面已經改版（新的點地圖選單、底部工具列都不一樣），截圖之後會更新。
 
-- One-tap teleport (map pin or place search)
-- Live joystick — walk / run / cycle / drive with light speed variation
-- Walk/Drive routing on real roads & footpaths (MapKit)
-- Draw a path or import / export GPX
-- Background keep-alive + live status bar + drop alerts
-- Favorites & recents
-- First-run setup walkthrough
-- Fully on-device — no analytics, nothing uploaded
+## 功能
 
-## Install
+- 點地圖放圖釘，立即選擇這次要怎麼移動：**傳送**（瞬移）、**導航**（從目前位置自動規劃路線）、**多點模式**（依序走訪你放的每個點）、**搖桿**（即時手動操控）
+- 依真實道路與人行步道規劃路線（MapKit），支援走路／跑步／騎車／開車
+- 除了預設的速度檔位，也能自訂精確速度，而且路線或搖桿移動中可以即時調整，不用先停下來重設
+- 匯入／匯出 GPX 路線
+- 背景保持連線＋即時狀態列＋斷線通知
+- 收藏與最近地點
+- 首次使用設定精靈
+- 完全在裝置端運作——沒有任何分析或上傳行為
 
-See [SETUP.md](SETUP.md) for full steps. Grab a prebuilt IPA from [Releases](https://github.com/ChrisMack32/Locus/releases), or build from source below.
+## 安裝
 
-Bundle ID: `com.chrismack.locus`
+完整步驟請看 [SETUP.md](SETUP.md)。你可以到 [Releases](https://github.com/OwOb0708/Locus/releases) 抓已經編譯好的 IPA，或是照下面的方式自己從原始碼編譯。
+
+Bundle ID：`com.chrismack.locus`
 
 ### LiveContainer
 
-File pickers often don’t work inside LiveContainer. Use one of these:
+在 LiveContainer 裡，檔案選擇器常常會失效。可以用下面任一種方式解決：
 
-1. Long-press **Locus** → **Settings** → enable **Fix File Picker**, then try Import again.
-2. Share the pairing file **into LiveContainer → Locus**.
-3. Copy the RPPairing plist contents → in Locus use **Paste RPPairing from clipboard** (setup or Settings).
+1. 長按 **Locus** → **設定** → 開啟 **修正檔案選擇器**，再試一次匯入。
+2. 把配對檔案分享**到 LiveContainer → Locus**。
+3. 複製 RPPairing 的 plist 內容 → 在 Locus 裡用**從剪貼簿貼上 RPPairing**（設定精靈或「設定」頁都有）。
 
-## How it works
+## 運作原理
 
-Locus uses the MIT-licensed [idevice](https://github.com/jkcoxson/idevice) FFI to talk to Apple’s DVT location simulation over an on-device developer tunnel (the same class of mechanism Xcode uses).
+Locus 使用 MIT 授權的 [idevice](https://github.com/jkcoxson/idevice) FFI，透過裝置端的開發者穿隧通道跟 Apple 的 DVT 定位模擬服務溝通（跟 Xcode 用的是同一類機制）。
 
-**iOS 27:** Settings → **Pair on this iPhone** advertises `_remotepairing-pairable-host._tcp`. Confirm the 6-digit code under Settings › Privacy & Security › Developer Mode › Pair with Host — no computer.
+**iOS 27：**到「設定」→ **在這支 iPhone 上配對**，會廣播 `_remotepairing-pairable-host._tcp`。到「設定」›「隱私權與安全性」›「開發者模式」›「與主機配對」確認那組 6 位數代碼即可——不需要電腦。
 
-**iOS 18–26:** import an **RPPairing** file once from [idevice_pair](https://github.com/jkcoxson/idevice_pair/releases).
+**iOS 18–26：**用 [idevice_pair](https://github.com/jkcoxson/idevice_pair/releases) 匯入一次 **RPPairing** 檔案。
 
-Also install **[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044)** (loopback tunnel, default `10.7.0.1`), then sideload Locus.
+另外要安裝 **[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044)**（本機迴圈穿隧通道，預設 `10.7.0.1`），再把 Locus 側載上去。
 
-Start a teleport on Wi‑Fi first; the session can keep working on cellular afterward.
+第一次瞬移建議先在 Wi‑Fi 下進行，之後連線可以在行動網路下繼續運作。
 
-### Pokémon GO & similar games
+### Pokémon GO 及類似遊戲
 
-Locus spoofs location the same way Xcode’s developer tools do: it tells iOS “you’re here,” and other apps read that from the system. Apps that just trust GPS (Apple Maps, etc.) will follow it.
+Locus 跟 Xcode 開發工具用的是同一種定位模擬方式：告訴 iOS「你在這裡」，其他 App 會從系統讀到這個結果。單純相信 GPS 的 App（Apple 地圖等）都會照著跑。
 
-**Pokémon GO is different.** It runs its own location checks and often rejects developer / simulated GPS (e.g. “Failed to detect location”). That’s expected with this method, not a Locus bug, and there’s no supported fix for it in this app.
+**Pokémon GO 是例外。** 它有自己一套定位檢查機制，通常會拒絕開發者／模擬的 GPS（例如出現「Failed to detect location」）。這是這種方法本來就會遇到的狀況，不是 Locus 的問題，這個 App 也沒有支援的解法。
 
-Tools like **iPogo** (and similar modified clients such as SpooferPro) work differently: they’re a **modified Pokémon GO app**, not a system-wide location spoof. Features live *inside* that altered game client, instead of feeding coordinates through iOS for every app. Locus never patches or replaces Pokémon GO; it only changes what the system reports. So those tools can appear to “work in Pokémon GO” while Locus correctly drives Maps but still gets blocked by Pokémon GO’s checks.
+像 **iPogo**（以及 SpooferPro 等類似的改版客戶端）運作方式不同：它們是**修改過的 Pokémon GO App 本身**，不是系統層級的定位模擬。功能是做在*那個被改過的遊戲用戶端裡面*，而不是像 Locus 這樣透過 iOS 系統把座標餵給所有 App。Locus 不會修補或取代 Pokémon GO，它只改變系統回報的內容。所以那類工具在 Pokémon GO 裡「看起來有效」，而 Locus 正確地驅動了地圖，卻還是會被 Pokémon GO 自己的檢查擋下來。
 
-Locus is for system-level teleporting. It isn’t a Pokémon GO client or an anti-cheat bypass.
+Locus 是系統層級的定位瞬移工具，不是 Pokémon GO 用戶端，也不是反偵測外掛。
 
-## Build
+## 編譯
 
-Building from source needs an Apple Developer account (free or paid) for code signing. The published IPA does **not** — just sideload it.
+從原始碼編譯需要一組 Apple Developer 帳號（免費或付費皆可）來做程式碼簽署。官方發布的 IPA **不需要**——直接側載就好。
 
-1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) if needed: `brew install xcodegen`
-2. Set your **Team ID** in `project.yml` (`DEVELOPMENT_TEAM`), *or* pick your team under Xcode → Signing & Capabilities after generating the project.
-3. Generate and open:
+1. 如果還沒裝，先安裝 [XcodeGen](https://github.com/yonaskolb/XcodeGen)：`brew install xcodegen`
+2. 在 `project.yml` 裡設定你的 **Team ID**（`DEVELOPMENT_TEAM`），或是在產生專案後到 Xcode → Signing & Capabilities 選你的 Team。
+3. 產生並打開專案：
 
 ```bash
 xcodegen generate
 open Locus.xcodeproj
 ```
 
-Or build from the CLI (replace with your Team ID from [developer.apple.com/account](https://developer.apple.com/account) → Membership):
+或是用命令列編譯（把下面的 Team ID 換成你自己的，到 [developer.apple.com/account](https://developer.apple.com/account) → Membership 查）：
 
 ```bash
 xcodegen generate
@@ -77,6 +79,6 @@ xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=YOUR_TEAM_ID build
 ```
 
-## License
+## 授權
 
-MIT. `Vendor/idevice` contains the idevice FFI (MIT). Locus is an independent open-source project and is not affiliated with Mirage / Wapixel.
+MIT 授權。`Vendor/idevice` 內含 idevice FFI（同樣是 MIT 授權）。Locus 是獨立的開源專案，與 Mirage／Wapixel 沒有任何關係。

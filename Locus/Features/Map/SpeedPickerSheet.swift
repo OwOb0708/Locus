@@ -2,20 +2,33 @@ import CoreLocation
 import SwiftUI
 
 /// Shared "pick a travel mode, or dial in an exact speed" sheet used by every
-/// move-along-a-route action (navigate / multi-stop / GPX / drawn path).
+/// move-along-a-route action (navigate / multi-stop / GPX).
 struct SpeedPickerSheet: View {
     var title: String
     @Binding var mode: TravelMode
     @Binding var speedMPS: CLLocationSpeed
     @Binding var isCustom: Bool
+    var showTripCount: Bool = false
+    @Binding var tripCount: Int
     var onConfirm: () -> Void
     var onCancel: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     private let speedRange: ClosedRange<Double> = 0.3...30
+    private let tripCountRange = 1...20
 
     private var speedKmh: Double { speedMPS * 3.6 }
+
+    private var tripCountDescription: String {
+        switch tripCount {
+        case 1: return "單程：直接走到目的地。"
+        case 2: return "來回：走到目的地後，原路走回起點。"
+        default:
+            let endsAtDestination = tripCount % 2 == 1
+            return "共 \(tripCount) 趟（在起點與目的地之間來回走），最後停在\(endsAtDestination ? "目的地" : "起點")。"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -95,6 +108,27 @@ struct SpeedPickerSheet: View {
                 .padding(16)
                 .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
+                if showTripCount {
+                    VStack(spacing: 10) {
+                        Stepper(value: $tripCount, in: tripCountRange) {
+                            HStack {
+                                Text("來回次數")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text("\(tripCount)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        Text(tripCountDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(16)
+                    .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+
                 Spacer(minLength: 0)
 
                 Button {
@@ -121,6 +155,6 @@ struct SpeedPickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(440)])
+        .presentationDetents([.height(showTripCount ? 560 : 440)])
     }
 }

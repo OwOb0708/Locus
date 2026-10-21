@@ -29,7 +29,7 @@ enum RouteBuilder {
     }
 
     static func sample(coordinates: [CLLocationCoordinate2D], every meters: CLLocationDistance) -> [CLLocationCoordinate2D] {
-        guard coordinates.count > 1 else { return coordinates }
+        guard coordinates.count > 1, meters.isFinite, meters > 0 else { return coordinates }
         var sampled = [coordinates[0]]
         for (a, b) in zip(coordinates, coordinates.dropFirst()) {
             let dist = CLLocation(latitude: a.latitude, longitude: a.longitude)
@@ -51,6 +51,11 @@ enum GPXCodec {
     static func parse(_ url: URL) throws -> [CLLocationCoordinate2D] {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
+        if let fileSize = resourceValues.fileSize, fileSize > 25 * 1024 * 1024 {
+            throw NSError(domain: "Locus", code: 3, userInfo: [NSLocalizedDescriptionKey: "GPX 檔案超過 25 MB，為避免 App 記憶體不足，請先縮小檔案。"])
+        }
         let data = try Data(contentsOf: url)
         let text = String(decoding: data, as: UTF8.self)
         var coords: [CLLocationCoordinate2D] = []
@@ -63,7 +68,10 @@ enum GPXCodec {
                   let lonR = Range(match.range(at: 2), in: text),
                   let lat = Double(text[latR]),
                   let lon = Double(text[lonR]) else { return }
-            coords.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+            let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+            if CLLocationCoordinate2DIsValid(coordinate), coords.count < 200_000 {
+                coords.append(coordinate)
+            }
         }
         // Also support lon before lat
         if coords.isEmpty {
@@ -75,7 +83,10 @@ enum GPXCodec {
                       let latR = Range(match.range(at: 2), in: text),
                       let lon = Double(text[lonR]),
                       let lat = Double(text[latR]) else { return }
-                coords.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                if CLLocationCoordinate2DIsValid(coordinate), coords.count < 200_000 {
+                    coords.append(coordinate)
+                }
             }
         }
         guard !coords.isEmpty else {

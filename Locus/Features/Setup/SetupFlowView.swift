@@ -13,6 +13,8 @@ struct SetupFlowView: View {
     @State private var appear = false
     @State private var showImporter = false
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
+    @State private var displayedError: String?
+    @State private var showSessionError = false
     @Environment(\.scenePhase) private var scenePhase
 
     enum Step: Int, CaseIterable {
@@ -64,6 +66,7 @@ struct SetupFlowView: View {
         .onAppear {
             withAnimation(.easeOut(duration: 0.7)) { appear = true }
             localDevVPNInstalled = LocalDevVPN.isInstalled
+            presentSessionError(session.lastError)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -81,6 +84,9 @@ struct SetupFlowView: View {
                 withAnimation { step = .vpn }
             }
         }
+        .onChange(of: session.lastError) { _, error in
+            presentSessionError(error)
+        }
         .sheet(isPresented: $showImporter) {
             PairingDocumentPicker(
                 onPick: { url in
@@ -96,14 +102,19 @@ struct SetupFlowView: View {
             )
             .ignoresSafeArea()
         }
-        .alert("Locus", isPresented: Binding(
-            get: { session.lastError != nil },
-            set: { if !$0 { session.lastError = nil } }
-        )) {
-            Button("好", role: .cancel) { session.lastError = nil }
+        .alert("Locus", isPresented: $showSessionError) {
+            Button("好", role: .cancel) {
+                session.lastError = nil
+            }
         } message: {
-            Text(session.lastError ?? "")
+            Text(displayedError ?? "")
         }
+    }
+
+    private func presentSessionError(_ error: String?) {
+        guard let error else { return }
+        displayedError = error
+        showSessionError = true
     }
 
     // MARK: - Chrome

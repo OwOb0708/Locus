@@ -68,6 +68,11 @@ enum SpoofStatus: Equatable {
     }
 }
 
+struct RouteProgress: Equatable {
+    let remainingDistance: CLLocationDistance
+    let estimatedArrival: Date
+}
+
 @MainActor
 final class SpoofSession: ObservableObject {
     @Published var status: SpoofStatus = .idle
@@ -81,6 +86,7 @@ final class SpoofSession: ObservableObject {
     @Published var lastError: String?
     @Published var isBusy = false
     @Published var joystickActive = false
+    @Published private(set) var routeProgress: RouteProgress?
 
     @Published var favorites: [SavedPlace] = []
     @Published var recents: [SavedPlace] = []
@@ -89,6 +95,8 @@ final class SpoofSession: ObservableObject {
     private var healthTimer: Timer?
     private var joystickTimer: Timer?
     private var routeTask: Task<Void, Never>?
+    private var commandGeneration = 0
+    private var deviceRequestCount = 0
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var joystickVector: CGVector = .zero
     private let locationKeeper = BackgroundKeepAlive()
@@ -125,17 +133,46 @@ final class SpoofSession: ObservableObject {
             lastError = "請先到「設定」匯入 RPPairing 檔案。"
             return
         }
+        routeTask?.cancel()
+        routeTask = nil
+        routeProgress = nil
+        stopJoystick()
+        let generation = beginCommand()
         pin = coordinate
-        Task { await self.apply(coordinate, pairing: pairing, markRecent: true) }
+        Task { await self.apply(coordinate, pairing: pairing, markRecent: true, generation: generation) }
     }
 
+    /// Stops route/joystick movement but leaves the device pinned at the
+    /// last simulated coordinate — matches how the underlying DVT location
+    /// simulation actually behaves (it keeps reporting that fix until the
+    /// session is explicitly cleared), so stopping doesn't jump you back to
+    /// your real GPS position. Use `returnToRealLocation` for that.
     func stop(pairing: PairingStore) {
+        routeTask?.cancel()
+        routeTask = nil
+        stopJoystick()
+        routeProgress = nil
+        guard let current = simulated else {
+            _ = beginCommand()
+            return
+        }
+        // Re-anchor on a fresh generation so the resend/health heartbeats
+        // keep holding this position instead of continuing to chase
+        // whatever route/joystick generation they were started under.
+        let generation = beginCommand()
+        Task { await self.apply(current, pairing: pairing, markRecent: false, generation: generation) }
+    }
+
+    /// Fully stops spoofing and lets the device report its real GPS fix again.
+    func returnToRealLocation(pairing: PairingStore) {
         routeTask?.cancel()
         routeTask = nil
         stopJoystick()
         stopResend()
         stopHealth()
-        isBusy = true
+        routeProgress = nil
+        let generation = beginCommand()
+        beginDeviceRequest()
         // The FFI call blocks on device I/O, so it runs off the main actor —
         // calling LocationEngine.clear() straight from here froze the whole UI
         // for however long the device call took (seen on-device as a hang).
@@ -143,10 +180,12 @@ final class SpoofSession: ObservableObject {
             let result = await Task.detached(priority: .userInitiated) {
                 LocationEngine.clear()
             }.value
-            isBusy = false
+            endDeviceRequest()
+            guard generation == commandGeneration else { return }
             switch result {
             case .success:
                 simulated = nil
+                pin = nil
                 status = .idle
                 endBackground()
                 // Keep location updates running so the map puck / locate button
@@ -183,15 +222,20 @@ final class SpoofSession: ObservableObject {
             lastError = "使用搖桿前，請先在地圖上放置圖釘或瞬移到某個地點。"
             return
         }
+        routeTask?.cancel()
+        routeTask = nil
+        routeProgress = nil
+        stopJoystick()
+        let generation = beginCommand()
         pin = start
         if simulated == nil || coordinate != nil {
-            Task { await self.apply(start, pairing: pairing, markRecent: false) }
+            Task { await self.apply(start, pairing: pairing, markRecent: false, generation: generation) }
         }
         joystickActive = true
         joystickTimer?.invalidate()
         joystickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.tickJoystick(pairing: pairing)
+                await self?.tickJoystick(pairing: pairing, generation: generation)
             }
         }
     }
@@ -205,16 +249,20 @@ final class SpoofSession: ObservableObject {
         joystickVector = .zero
         joystickTimer?.invalidate()
         joystickTimer = nil
+        _ = beginCommand()
     }
 
     func followRoute(_ coordinates: [CLLocationCoordinate2D], pairing: PairingStore) {
         guard pairing.hasPairingFile, coordinates.count >= 2 else { return }
         routeTask?.cancel()
         stopJoystick()
+        let generation = beginCommand()
+        var remainingDistance = Self.routeDistance(coordinates)
+        updateRouteProgress(remainingDistance: remainingDistance)
         routeTask = Task { [weak self] in
             guard let self else { return }
             var previous = coordinates[0]
-            await self.apply(previous, pairing: pairing, markRecent: true)
+            await self.apply(previous, pairing: pairing, markRecent: true, generation: generation)
             for next in coordinates.dropFirst() {
                 if Task.isCancelled { break }
                 let distance = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
@@ -236,11 +284,25 @@ final class SpoofSession: ObservableObject {
                     let delay = stepMeters / speed
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                     if Task.isCancelled { break }
-                    await self.apply(coord, pairing: pairing, markRecent: false)
+                    await self.apply(coord, pairing: pairing, markRecent: false, generation: generation)
+                    remainingDistance = max(0, remainingDistance - distance / Double(steps))
+                    self.updateRouteProgress(remainingDistance: remainingDistance)
                 }
                 previous = next
             }
+            // Arrived naturally (not interrupted by Stop or a newer route) —
+            // say so, and hold at the destination (stop() just halts
+            // movement, it doesn't clear the simulated fix).
+            if !Task.isCancelled, generation == self.commandGeneration {
+                self.postArrivedNotification()
+                self.stop(pairing: pairing)
+            }
         }
+    }
+
+    func refreshRouteEstimate() {
+        guard let progress = routeProgress else { return }
+        updateRouteProgress(remainingDistance: progress.remainingDistance)
     }
 
     func addFavorite(name: String, coordinate: CLLocationCoordinate2D) {
@@ -261,11 +323,17 @@ final class SpoofSession: ObservableObject {
         SavedPlace.save(favorites, key: favoritesKey)
     }
 
-    func renameFavorite(_ place: SavedPlace, to name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let index = favorites.firstIndex(where: { $0.id == place.id }) else { return }
-        favorites[index].name = trimmed
+    /// Updates a favorite's name and category label/color together. Pass
+    /// `nil` category name/color to leave it uncategorized (neutral dot).
+    func updateFavorite(_ place: SavedPlace, name: String, categoryName: String?, categoryColor: PlaceCategoryColor?) {
+        guard let index = favorites.firstIndex(where: { $0.id == place.id }) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            favorites[index].name = trimmedName
+        }
+        let trimmedCategory = categoryName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        favorites[index].categoryName = (trimmedCategory?.isEmpty ?? true) ? nil : trimmedCategory
+        favorites[index].categoryColor = categoryColor
         SavedPlace.save(favorites, key: favoritesKey)
     }
 
@@ -318,27 +386,33 @@ final class SpoofSession: ObservableObject {
     /// it must never run directly on the main actor — doing so freezes the
     /// whole UI for that long, which is exactly what showed up on-device as
     /// a hang during joystick/route movement and periodic resends.
-    private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) async {
+    private func apply(
+        _ coordinate: CLLocationCoordinate2D,
+        pairing: PairingStore,
+        markRecent: Bool,
+        generation: Int
+    ) async {
+        guard generation == commandGeneration else { return }
         if status == .idle || status.isDropped {
             status = .connecting
         }
-        isBusy = true
+        beginDeviceRequest()
         let pairingPath = pairing.pairingPath
         let deviceIP = TunnelConfig.targetIP
         let result = await Task.detached(priority: .userInitiated) {
             LocationEngine.set(latitude: coordinate.latitude, longitude: coordinate.longitude, pairingPath: pairingPath, deviceIP: deviceIP)
         }.value
-        isBusy = false
+        endDeviceRequest()
+        guard generation == commandGeneration else { return }
         switch result {
         case .success:
             simulated = coordinate
-            pin = coordinate
             status = .active
             lastError = nil
             beginBackground()
             locationKeeper.start()
-            startResend(pairing: pairing)
-            startHealth(pairing: pairing)
+            startResend(pairing: pairing, generation: generation)
+            startHealth(pairing: pairing, generation: generation)
             if markRecent {
                 pushRecent(coordinate)
             }
@@ -353,8 +427,8 @@ final class SpoofSession: ObservableObject {
         }
     }
 
-    private func tickJoystick(pairing: PairingStore) async {
-        guard joystickActive, let current = simulated else { return }
+    private func tickJoystick(pairing: PairingStore, generation: Int) async {
+        guard generation == commandGeneration, !isBusy, joystickActive, let current = simulated else { return }
         let magnitude = hypot(joystickVector.dx, joystickVector.dy)
         guard magnitude > 0.08 else { return }
         let nx = joystickVector.dx / magnitude
@@ -363,19 +437,18 @@ final class SpoofSession: ObservableObject {
         let dt = 0.25
         let meters = speed * dt
         let next = offset(coordinate: current, eastMeters: nx * meters, northMeters: ny * meters)
-        await apply(next, pairing: pairing, markRecent: false)
+        await apply(next, pairing: pairing, markRecent: false, generation: generation)
     }
 
-    private func startResend(pairing: PairingStore) {
+    private func startResend(pairing: PairingStore, generation: Int) {
         resendTimer?.invalidate()
         resendTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let sim = self.simulated else { return }
-                let pairingPath = pairing.pairingPath
-                let deviceIP = TunnelConfig.targetIP
-                _ = await Task.detached(priority: .utility) {
-                    LocationEngine.set(latitude: sim.latitude, longitude: sim.longitude, pairingPath: pairingPath, deviceIP: deviceIP)
-                }.value
+                guard let self,
+                      generation == self.commandGeneration,
+                      !self.isBusy,
+                      let sim = self.simulated else { return }
+                await self.apply(sim, pairing: pairing, markRecent: false, generation: generation)
             }
         }
     }
@@ -385,17 +458,20 @@ final class SpoofSession: ObservableObject {
         resendTimer = nil
     }
 
-    private func startHealth(pairing: PairingStore) {
+    private func startHealth(pairing: PairingStore, generation: Int) {
         healthTimer?.invalidate()
         healthTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let sim = self.simulated else { return }
+                guard let self,
+                      generation == self.commandGeneration,
+                      !self.isBusy,
+                      let sim = self.simulated else { return }
                 if case .dropped = self.status {
                     self.status = .reconnecting
-                    await self.apply(sim, pairing: pairing, markRecent: false)
+                    await self.apply(sim, pairing: pairing, markRecent: false, generation: generation)
                 } else if !LocationEngine.isSessionActive, self.isSpoofing {
                     self.status = .reconnecting
-                    await self.apply(sim, pairing: pairing, markRecent: false)
+                    await self.apply(sim, pairing: pairing, markRecent: false, generation: generation)
                 }
             }
         }
@@ -404,6 +480,36 @@ final class SpoofSession: ObservableObject {
     private func stopHealth() {
         healthTimer?.invalidate()
         healthTimer = nil
+    }
+
+    private func beginCommand() -> Int {
+        commandGeneration &+= 1
+        return commandGeneration
+    }
+
+    private func beginDeviceRequest() {
+        deviceRequestCount += 1
+        isBusy = true
+    }
+
+    private func endDeviceRequest() {
+        deviceRequestCount = max(0, deviceRequestCount - 1)
+        isBusy = deviceRequestCount > 0
+    }
+
+    private func updateRouteProgress(remainingDistance: CLLocationDistance) {
+        let speed = max(0.1, effectiveSpeed)
+        routeProgress = RouteProgress(
+            remainingDistance: remainingDistance,
+            estimatedArrival: Date().addingTimeInterval(remainingDistance / speed)
+        )
+    }
+
+    private static func routeDistance(_ coordinates: [CLLocationCoordinate2D]) -> CLLocationDistance {
+        zip(coordinates, coordinates.dropFirst()).reduce(0) { total, pair in
+            total + CLLocation(latitude: pair.0.latitude, longitude: pair.0.longitude)
+                .distance(from: CLLocation(latitude: pair.1.latitude, longitude: pair.1.longitude))
+        }
     }
 
     private func pushRecent(_ coordinate: CLLocationCoordinate2D) {
@@ -446,6 +552,16 @@ final class SpoofSession: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Locus 模擬定位已中斷"
         content.body = message
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func postArrivedNotification() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let content = UNMutableNotificationContent()
+        content.title = "Locus 已抵達"
+        content.body = "路線已經走完，模擬定位已自動停止。"
         content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)

@@ -1,8 +1,10 @@
+import CoreLocation
 import Foundation
 import idevice
 
 enum LocationEngineError: LocalizedError {
     case invalidIP
+    case invalidCoordinate
     case pairingRead(String?)
     case tunnelCreate(String?)
     case remoteServer(String?)
@@ -15,6 +17,8 @@ enum LocationEngineError: LocalizedError {
         switch self {
         case .invalidIP:
             return "穿隧 IP 無效，請到「設定」檢查 Device IP（預設為 10.7.0.1）。"
+        case .invalidCoordinate:
+            return "座標超出有效範圍，已取消這次定位操作。"
         case .pairingRead(let detail):
             return "無法讀取 RPPairing 檔案，請用 idevice_pair 以 RPPairing 模式重新產生一份。\(Self.suffix(detail))"
         case .tunnelCreate(let detail):
@@ -47,7 +51,9 @@ enum LocationEngine {
     private static var remoteServer: OpaquePointer?
     private static var locationSimulation: OpaquePointer?
 
-    static var isSessionActive: Bool { locationSimulation != nil }
+    static var isSessionActive: Bool {
+        queue.sync { locationSimulation != nil }
+    }
 
     static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) -> Result<Void, LocationEngineError> {
         var result: Result<Void, LocationEngineError> = .failure(.locationSet(nil))
@@ -104,6 +110,11 @@ enum LocationEngine {
 
     private static func setLocked(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) -> LocationEngineError? {
         NSLog("[Locus] LocationEngine.set targetDeviceIP=%@ lat=%.5f lon=%.5f", deviceIP, latitude, longitude)
+
+        let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        guard latitude.isFinite, longitude.isFinite, CLLocationCoordinate2DIsValid(coordinate) else {
+            return .invalidCoordinate
+        }
 
         if let locationSimulation {
             if let err = location_simulation_set(locationSimulation, latitude, longitude) {

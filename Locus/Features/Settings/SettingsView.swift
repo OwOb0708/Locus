@@ -182,33 +182,61 @@ struct PlacesView: View {
     @EnvironmentObject private var pairing: PairingStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var placeToRename: SavedPlace?
-    @State private var renameText = ""
+    @State private var placeToEdit: SavedPlace?
+
+    /// Groups favorites by their category label (uncategorized ones last),
+    /// preserving the order categories first appeared in.
+    private var groupedFavorites: [(key: String, color: Color, places: [SavedPlace])] {
+        let uncategorized = "未分類"
+        var order: [String] = []
+        var buckets: [String: [SavedPlace]] = [:]
+        var colors: [String: Color] = [:]
+        for place in session.favorites {
+            let key = place.displayCategory ?? uncategorized
+            if buckets[key] == nil {
+                buckets[key] = []
+                order.append(key)
+                colors[key] = place.resolvedColor
+            }
+            buckets[key, default: []].append(place)
+        }
+        let orderedKeys = order.filter { $0 != uncategorized } + order.filter { $0 == uncategorized }
+        return orderedKeys.map { ($0, colors[$0] ?? Color.primary.opacity(0.4), buckets[$0] ?? []) }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("收藏") {
-                    if session.favorites.isEmpty {
+                if session.favorites.isEmpty {
+                    Section("收藏") {
                         Text("在地圖上幫圖釘按星號就能收藏。")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(session.favorites) { place in
-                        placeButton(place)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    session.removeFavorite(place)
-                                } label: {
-                                    Label("刪除", systemImage: "trash.fill")
-                                }
-                                Button {
-                                    placeToRename = place
-                                    renameText = place.name
-                                } label: {
-                                    Label("重新命名", systemImage: "pencil")
-                                }
-                                .tint(.gray)
+                } else {
+                    ForEach(groupedFavorites, id: \.key) { group in
+                        Section {
+                            ForEach(group.places) { place in
+                                placeButton(place)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                        Button(role: .destructive) {
+                                            session.removeFavorite(place)
+                                        } label: {
+                                            Label("刪除", systemImage: "trash.fill")
+                                        }
+                                        Button {
+                                            placeToEdit = place
+                                        } label: {
+                                            Label("編輯", systemImage: "pencil")
+                                        }
+                                        .tint(.gray)
+                                    }
                             }
+                        } header: {
+                            HStack(spacing: 6) {
+                                Circle().fill(group.color).frame(width: 8, height: 8)
+                                Text(group.key)
+                            }
+                        }
                     }
                 }
 
@@ -235,22 +263,10 @@ struct PlacesView: View {
                     Button("完成") { dismiss() }
                 }
             }
-            .alert("重新命名收藏", isPresented: Binding(
-                get: { placeToRename != nil },
-                set: { if !$0 { placeToRename = nil } }
-            )) {
-                TextField("名稱", text: $renameText)
-                Button("取消", role: .cancel) {
-                    placeToRename = nil
+            .sheet(item: $placeToEdit) { place in
+                EditFavoriteSheet(place: place) { name, categoryName, categoryColor in
+                    session.updateFavorite(place, name: name, categoryName: categoryName, categoryColor: categoryColor)
                 }
-                Button("儲存") {
-                    if let place = placeToRename {
-                        session.renameFavorite(place, to: renameText)
-                    }
-                    placeToRename = nil
-                }
-            } message: {
-                Text("取一個之後看得懂的名稱。")
             }
         }
     }
@@ -260,12 +276,90 @@ struct PlacesView: View {
             session.teleport(to: place.coordinate, pairing: pairing)
             dismiss()
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(place.name).foregroundStyle(.primary)
-                Text(String(format: "%.5f, %.5f", place.latitude, place.longitude))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Circle().fill(place.resolvedColor).frame(width: 10, height: 10)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.name).foregroundStyle(.primary)
+                    Text(String(format: "%.5f, %.5f", place.latitude, place.longitude))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+    }
+}
+
+/// Name + optional category label/color for a favorite. Used both when
+/// starring a new place later and when editing one from the Places list.
+private struct EditFavoriteSheet: View {
+    let place: SavedPlace
+    var onSave: (_ name: String, _ categoryName: String?, _ categoryColor: PlaceCategoryColor?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var categoryName: String
+    @State private var categoryColor: PlaceCategoryColor?
+
+    init(place: SavedPlace, onSave: @escaping (String, String?, PlaceCategoryColor?) -> Void) {
+        self.place = place
+        self.onSave = onSave
+        _name = State(initialValue: place.name)
+        _categoryName = State(initialValue: place.displayCategory ?? "")
+        _categoryColor = State(initialValue: place.categoryColor)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("名稱") {
+                    TextField("名稱", text: $name)
+                }
+                Section("分類") {
+                    TextField("分類名稱（例如：補給點、A 區）", text: $categoryName)
+                    HStack(spacing: 14) {
+                        ForEach(PlaceCategoryColor.allCases) { swatch in
+                            Button {
+                                categoryColor = swatch
+                            } label: {
+                                Circle()
+                                    .fill(swatch.color)
+                                    .frame(width: 28, height: 28)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.primary, lineWidth: categoryColor == swatch ? 2 : 0)
+                                            .padding(-3)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 0)
+                        if categoryColor != nil {
+                            Button {
+                                categoryColor = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("編輯地點")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("儲存") {
+                        onSave(name, categoryName, categoryColor)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.height(360)])
     }
 }

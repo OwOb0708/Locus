@@ -4,6 +4,8 @@ import NetworkExtension
 struct RootView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
+    @State private var displayedError: String?
+    @State private var showSessionError = false
 
     var body: some View {
         // Bottom chrome is a sibling overlay aligned to the bottom — no full-screen
@@ -19,14 +21,25 @@ struct RootView: View {
                     .padding(.bottom, 8)
             }
         }
-        .alert("Locus", isPresented: Binding(
-            get: { session.lastError != nil },
-            set: { if !$0 { session.lastError = nil } }
-        )) {
-            Button("好", role: .cancel) { session.lastError = nil }
-        } message: {
-            Text(session.lastError ?? "")
+        .onAppear {
+            presentSessionError(session.lastError)
         }
+        .onChange(of: session.lastError) { _, error in
+            presentSessionError(error)
+        }
+        .alert("Locus", isPresented: $showSessionError) {
+            Button("好", role: .cancel) {
+                session.lastError = nil
+            }
+        } message: {
+            Text(displayedError ?? "")
+        }
+    }
+
+    private func presentSessionError(_ error: String?) {
+        guard let error else { return }
+        displayedError = error
+        showSessionError = true
     }
 }
 
@@ -172,64 +185,86 @@ struct BottomControlsView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-
-                // Lets you change pace while a route/joystick is already
-                // moving — `followRoute`/joystick both read `effectiveSpeed`
-                // live each step, so this takes effect immediately.
-                if session.isSpoofing {
-                    Button {
-                        liveMode = session.travelMode
-                        liveSpeed = session.effectiveSpeed
-                        liveIsCustom = session.customSpeed != nil
-                        showSpeedAdjust = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "speedometer")
-                            Text(String(format: "%.0f km/h", session.effectiveSpeed * 3.6))
-                                .lineLimit(1)
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .padding(.vertical, 12)
-                        .padding(.horizontal, 10)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
+            // Two balanced blocks (progress on the left, controls on the
+            // right) instead of stacking a right-aligned controls row above
+            // a separately-aligned progress row — that left a large diagonal
+            // gap between them.
+            HStack(alignment: .top, spacing: 14) {
+                if let progress = session.routeProgress {
+                    RouteProgressView(progress: progress)
                 }
 
-                if session.joystickActive {
-                    Button {
-                        session.stopJoystick()
-                    } label: {
-                        Text("結束遙控")
-                            .font(.subheadline.weight(.bold))
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    // Lets you change pace while a route/joystick is already
+                    // moving — `followRoute`/joystick both read `effectiveSpeed`
+                    // live each step, so this takes effect immediately.
+                    if session.isSpoofing {
+                        Button {
+                            liveMode = session.travelMode
+                            liveSpeed = session.effectiveSpeed
+                            liveIsCustom = session.customSpeed != nil
+                            showSpeedAdjust = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "speedometer")
+                                Text(String(format: "%.0f km/h", session.effectiveSpeed * 3.6))
+                                    .lineLimit(1)
+                            }
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
-                            .frame(minWidth: 96)
-                            .padding(.vertical, 12)
+                            .padding(.vertical, 10)
                             .padding(.horizontal, 10)
                             .background(Capsule().fill(Color.primary.opacity(0.08)))
                             .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
 
-                if session.isSpoofing {
-                    Button {
-                        session.stop(pairing: pairing)
-                    } label: {
-                        Text("停止")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(minWidth: 72)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 8)
-                            .background(Capsule().fill(LocusTheme.danger))
-                            .contentShape(Capsule())
+                    HStack(spacing: 8) {
+                        if session.isSpoofing {
+                            // Stop just holds at the current spot — this is
+                            // the explicit opt-in to actually drop back to
+                            // the device's real GPS fix.
+                            IconButton(systemName: "location.slash.fill") {
+                                session.returnToRealLocation(pairing: pairing)
+                            }
+                            .accessibilityLabel("回到真實位置")
+                        }
+
+                        if session.joystickActive {
+                            Button {
+                                session.stopJoystick()
+                            } label: {
+                                Text("結束遙控")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(.primary)
+                                    .frame(minWidth: 88)
+                                    .padding(.vertical, 12)
+                                    .padding(.horizontal, 10)
+                                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if session.isSpoofing {
+                            Button {
+                                session.stop(pairing: pairing)
+                            } label: {
+                                Text("停止")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 64)
+                                    .padding(.vertical, 12)
+                                    .padding(.horizontal, 8)
+                                    .background(Capsule().fill(LocusTheme.danger))
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -243,13 +278,56 @@ struct BottomControlsView: View {
                 mode: $liveMode,
                 speedMPS: $liveSpeed,
                 isCustom: $liveIsCustom,
+                tripCount: .constant(1),
                 onConfirm: {
                     session.travelMode = liveMode
                     session.customSpeed = liveIsCustom ? liveSpeed : nil
+                    session.refreshRouteEstimate()
                 },
                 onCancel: {}
             )
         }
+    }
+}
+
+private struct RouteProgressView: View {
+    let progress: RouteProgress
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 4) {
+                Label(distanceText, systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+
+                HStack(spacing: 6) {
+                    Label(countdownText(at: context.date), systemImage: "timer")
+                    Text("·").foregroundStyle(.secondary)
+                    Text(progress.estimatedArrival, format: .dateTime.hour().minute())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var distanceText: String {
+        if progress.remainingDistance < 1_000 {
+            return "剩餘 \(Int(progress.remainingDistance.rounded())) 公尺"
+        }
+        return String(format: "剩餘 %.1f 公里", progress.remainingDistance / 1_000)
+    }
+
+    private func countdownText(at date: Date) -> String {
+        let seconds = max(0, Int(progress.estimatedArrival.timeIntervalSince(date).rounded(.up)))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 }
 

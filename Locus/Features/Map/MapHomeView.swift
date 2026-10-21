@@ -23,6 +23,14 @@ private enum SpeedPickerContext: Identifiable {
         case .importedGPX: return "播放匯入的 GPX 路線"
         }
     }
+
+    /// Only a route with a clear "there and back" shape makes sense to repeat.
+    var supportsRepeat: Bool {
+        switch self {
+        case .navigate, .multiStop: return true
+        case .importedGPX: return false
+        }
+    }
 }
 
 /// Identifiable wrapper so a plain coordinate can drive `.sheet(item:)`.
@@ -56,8 +64,11 @@ struct MapHomeView: View {
     @State private var pickedMode: TravelMode = .walk
     @State private var pickedSpeed: CLLocationSpeed = TravelMode.walk.baseSpeed
     @State private var pickedIsCustom = false
+    @State private var pickedTripCount = 1
     @State private var showSettings = false
     @State private var showPlaces = false
+    @StateObject private var postStore = PikminPostStore()
+    @State private var showPikminPostList = false
 
     /// Plain standard map, no satellite/hybrid imagery and no 3D elevation —
     /// keeps rendering cheap and avoids MapKit's realistic-elevation glitches.
@@ -72,7 +83,7 @@ struct MapHomeView: View {
                 Map(position: $position) {
                     UserAnnotation()
 
-                    if let pin = session.pin {
+                    if let pin = session.pin, routeCoords.isEmpty {
                         Annotation("", coordinate: pin, anchor: .bottom) {
                             MapDropPin(
                                 selected: pinSelected,
@@ -126,6 +137,12 @@ struct MapHomeView: View {
                             }
                         }
                     }
+                    ForEach(session.favorites) { place in
+                        Annotation(place.name, coordinate: place.coordinate) {
+                            FavoriteMarker(color: place.resolvedColor)
+                                .onTapGesture { selectFavorite(place) }
+                        }
+                    }
                     ForEach(Array(multiStopWaypoints.enumerated()), id: \.offset) { index, coord in
                         Annotation("", coordinate: coord) {
                             WaypointMarker(number: index + 1)
@@ -134,6 +151,17 @@ struct MapHomeView: View {
                     if routeCoords.count > 1 {
                         MapPolyline(coordinates: routeCoords)
                             .stroke(LocusTheme.accent, lineWidth: 5)
+
+                        if let start = routeCoords.first {
+                            Annotation("起點", coordinate: start) {
+                                RouteEndpointMarker(kind: .start)
+                            }
+                        }
+                        if let destination = routeCoords.last {
+                            Annotation("終點", coordinate: destination) {
+                                RouteEndpointMarker(kind: .destination)
+                            }
+                        }
                     }
                     if multiStopWaypoints.count > 1 {
                         MapPolyline(coordinates: multiStopWaypoints)
@@ -168,8 +196,17 @@ struct MapHomeView: View {
         .onAppear {
             session.startLocationUpdates()
         }
+        .task {
+            await postStore.load()
+        }
         .onChange(of: session.pin?.latitude) { _, newValue in
             if newValue == nil { pinSelected = false }
+        }
+        .onChange(of: session.routeProgress) { _, progress in
+            if progress == nil {
+                routeCoords.removeAll()
+                multiStopWaypoints.removeAll()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .locusImportGPX)) { note in
             guard let url = note.object as? URL else { return }
@@ -178,6 +215,16 @@ struct MapHomeView: View {
         .fileImporter(isPresented: $showGPXImporter, allowedContentTypes: [.xml, .data], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first {
                 importGPX(url)
+            }
+        }
+        .sheet(isPresented: $showPikminPostList) {
+            PikminPostListView(
+                store: postStore
+            ) { post in
+                showPikminPostList = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    selectPikminPost(post)
+                }
             }
         }
         .sheet(item: $pendingPin) { pending in
@@ -205,6 +252,8 @@ struct MapHomeView: View {
                 mode: $pickedMode,
                 speedMPS: $pickedSpeed,
                 isCustom: $pickedIsCustom,
+                showTripCount: payload.context.supportsRepeat,
+                tripCount: $pickedTripCount,
                 onConfirm: { startFollowing(payload.context) },
                 onCancel: {}
             )
@@ -221,6 +270,7 @@ struct MapHomeView: View {
         pickedMode = session.travelMode
         pickedSpeed = session.effectiveSpeed
         pickedIsCustom = session.customSpeed != nil
+        pickedTripCount = 1
         speedPickerPayload = SpeedPickerContextWrapper(context: context)
     }
 
@@ -231,7 +281,11 @@ struct MapHomeView: View {
                 session.lastError = "目前抓不到你的位置，請稍後再試。"
                 return
             }
-            runRoute { try await RouteBuilder.roadRoute(from: start, to: destination, mode: pickedMode) }
+            let times = pickedTripCount
+            runRoute {
+                let oneWay = try await RouteBuilder.roadRoute(from: start, to: destination, mode: pickedMode)
+                return Self.repeatingBackAndForth(oneWay, times: times)
+            }
         case .multiStop(let waypoints):
             // The start is wherever you actually are right now — the pin
             // that opened the "多點模式" sheet is already the *first stop*
@@ -243,6 +297,7 @@ struct MapHomeView: View {
                 session.lastError = "目前抓不到你的位置，請稍後再試。"
                 return
             }
+            let times = pickedTripCount
             runRoute {
                 var full: [CLLocationCoordinate2D] = []
                 var previous = start
@@ -251,11 +306,27 @@ struct MapHomeView: View {
                     full.append(contentsOf: full.isEmpty ? leg : Array(leg.dropFirst()))
                     previous = point
                 }
-                return full
+                return Self.repeatingBackAndForth(full, times: times)
             }
         case .importedGPX(let coords):
             beginFollowing(coords)
         }
+    }
+
+    /// `times == 1` is just the one-way trip as-is. `times == 2` appends the
+    /// same path reversed (walk back to the start). `times == 3` appends it
+    /// forward again on top of that (back to the destination), and so on —
+    /// each additional "次" flips direction, alternating there/back.
+    private static func repeatingBackAndForth(_ oneWay: [CLLocationCoordinate2D], times: Int) -> [CLLocationCoordinate2D] {
+        guard times > 1, oneWay.count > 1 else { return oneWay }
+        var full = oneWay
+        var forward = true
+        for _ in 1..<times {
+            forward.toggle()
+            let leg = forward ? oneWay : Array(oneWay.reversed())
+            full.append(contentsOf: leg.dropFirst())
+        }
+        return full
     }
 
     private func runRoute(_ build: @escaping () async throws -> [CLLocationCoordinate2D]) {
@@ -304,11 +375,52 @@ struct MapHomeView: View {
         }
     }
 
+    private func selectPikminPost(_ post: PikminPost) {
+        suppressNextMapTap = true
+        session.pin = post.coordinate
+        pinPlaceName = "\(post.kind.title)・\(post.name)"
+        pinSelected = false
+        withAnimation(.easeInOut(duration: 0.3)) {
+            position = .region(MKCoordinateRegion(
+                center: post.coordinate,
+                latitudinalMeters: 800,
+                longitudinalMeters: 800
+            ))
+        }
+        pendingPin = PendingPin(coordinate: post.coordinate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            suppressNextMapTap = false
+        }
+    }
+
+    private func selectFavorite(_ place: SavedPlace) {
+        if multiStopActive {
+            multiStopWaypoints.append(place.coordinate)
+            return
+        }
+        session.pin = place.coordinate
+        pinPlaceName = place.name
+        withAnimation(.easeInOut(duration: 0.3)) {
+            position = .region(MKCoordinateRegion(center: place.coordinate, latitudinalMeters: 800, longitudinalMeters: 800))
+        }
+        pendingPin = PendingPin(coordinate: place.coordinate)
+    }
+
     private var topChrome: some View {
         VStack(spacing: 10) {
             StatusBarView()
 
             searchBar
+
+            PikminPostListButton(
+                mushroomCount: postStore.mushroomCount,
+                flowerCount: postStore.flowerCount,
+                isLoading: postStore.isLoading,
+                errorMessage: postStore.errorMessage
+            ) {
+                searchFocused = false
+                showPikminPostList = true
+            }
 
             if !searchText.isEmpty && !search.results.isEmpty {
                 searchResults
@@ -346,9 +458,12 @@ struct MapHomeView: View {
             .foregroundStyle(LocusTheme.danger)
 
             Button("完成") {
+                // Keep multiStopWaypoints around (just stop editing it) so
+                // the numbered markers stay on the map while the route is
+                // actually walked — they're cleared once the route ends,
+                // alongside routeCoords.
                 let points = multiStopWaypoints
                 multiStopActive = false
-                multiStopWaypoints.removeAll()
                 presentSpeedPicker(.multiStop(points))
             }
             .fontWeight(.bold)
@@ -646,7 +761,211 @@ private struct PinActionSheet: View {
     }
 }
 
+private struct PikminPostListButton: View {
+    let mushroomCount: Int
+    let flowerCount: Int
+    let isLoading: Bool
+    let errorMessage: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text("🍄")
+                Text("菇點")
+                Text("\(mushroomCount)")
+                    .foregroundStyle(.secondary)
+
+                Divider()
+                    .frame(height: 18)
+
+                Text("🌸")
+                Text("花點")
+                Text("\(flowerCount)")
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 4)
+
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if errorMessage != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(LocusTheme.statusWarn)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .locusGlass(.clear, in: Capsule())
+        .disabled(isLoading)
+        .accessibilityLabel("開啟菇點與花點清單")
+    }
+}
+
+private struct PikminPostListView: View {
+    @ObservedObject var store: PikminPostStore
+    let onSelect: (PikminPost) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedKind: PikminPost.Kind = .mushroom
+    @State private var searchText = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("地點種類", selection: $selectedKind) {
+                    Text("🍄 菇點（\(store.mushroomPosts.count)）")
+                        .tag(PikminPost.Kind.mushroom)
+                    Text("🌸 花點（\(store.flowerPosts.count)）")
+                        .tag(PikminPost.Kind.flower)
+                }
+                .pickerStyle(.segmented)
+                .padding()
+
+                PikminPostResultsList(
+                    posts: selectedKind == .mushroom ? store.mushroomPosts : store.flowerPosts,
+                    isLoading: store.isLoading,
+                    errorMessage: store.errorMessage,
+                    onSelect: onSelect
+                )
+            }
+            .navigationTitle("Pikmin 地點")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "搜尋名稱或國家")
+            .task(id: searchText) {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                store.updateSearch(searchText)
+            }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .onDisappear {
+            store.updateSearch("")
+        }
+    }
+}
+
+private struct PikminPostResultsList: View {
+    let posts: [PikminPost]
+    let isLoading: Bool
+    let errorMessage: String?
+    let onSelect: (PikminPost) -> Void
+
+    var body: some View {
+        if isLoading && posts.isEmpty {
+            ProgressView("正在讀取內建地點…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage, posts.isEmpty {
+            ContentUnavailableView(
+                "無法載入地點",
+                systemImage: "doc.badge.exclamationmark",
+                description: Text(errorMessage)
+            )
+        } else if posts.isEmpty {
+            ContentUnavailableView(
+                "沒有符合的地點",
+                systemImage: "magnifyingglass",
+                description: Text("請改用其他名稱或國家搜尋。")
+            )
+        } else {
+            List(posts) { post in
+                PikminPostRow(post: post) {
+                    onSelect(post)
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
+private struct PikminPostRow: View {
+    let post: PikminPost
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                AsyncImage(url: post.thumbnailURL) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        ZStack {
+                            (post.kind == .mushroom ? Color.brown : Color.pink).opacity(0.18)
+                            Text(post.kind.symbol)
+                                .font(.title2)
+                        }
+                    }
+                }
+                .frame(width: 58, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(post.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+
+                    HStack(spacing: 6) {
+                        Text(post.kind.title)
+                        if !post.country.isEmpty {
+                            Text("·")
+                            Text(post.country)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "figure.walk.motion")
+                    .foregroundStyle(LocusTheme.accent)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("點一下選擇移動方式")
+    }
+}
+
 /// Small numbered marker for multi-stop waypoints, in visit order.
+/// Colored by the favorite's category so different groups (e.g. different
+/// kinds of saved spots) are visually distinguishable directly on the map,
+/// not just in the Places list.
+private struct FavoriteMarker: View {
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle().fill(color).frame(width: 22, height: 22)
+                .overlay(Circle().stroke(.white, lineWidth: 2))
+            Image(systemName: "star.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+    }
+}
+
 private struct WaypointMarker: View {
     let number: Int
 
@@ -659,6 +978,32 @@ private struct WaypointMarker: View {
                 .foregroundStyle(.white)
         }
         .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+    }
+}
+
+private struct RouteEndpointMarker: View {
+    enum Kind {
+        case start
+        case destination
+    }
+
+    let kind: Kind
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Image(systemName: kind == .start ? "figure.walk.circle.fill" : "flag.circle.fill")
+                .font(.title2)
+                .foregroundStyle(kind == .start ? LocusTheme.statusGood : LocusTheme.statusBad)
+                .background(Circle().fill(.white))
+
+            Text(kind == .start ? "起點" : "終點")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(.regularMaterial, in: Capsule())
+        }
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
     }
 }
 
